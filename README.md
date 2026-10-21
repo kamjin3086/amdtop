@@ -22,13 +22,18 @@ layout.
 
 - **Collapsible CPU / GPU / NPU / Processes sections** (state persists across runs)
 - **CPU section, btop-style**: per-core grid with braille history mini-graphs,
-  package temp/power, load average, plus system MEM/SWP
+  package temp/power and load average folded into the box title, MEM and SWP
+  sharing one row, and a core grid that uses more columns on wide terminals
+  (32 cores = 4 rows instead of 8)
 - **Multi-GPU**: one band per device, labeled by index + PCI bus-id
 - **APU-aware memory**: shows the real GTT (unified system RAM) pool on APUs,
   VRAM on discrete cards — both labeled `MEM`
 - **Adaptive memory-bandwidth telemetry**: shows memory-controller utilization
   where available alongside SoC DRAM read/write throughput on supported APUs
-- **XDNA NPU**: presence detection on `/sys/class/accel`; utilization + per-context table when the `amdxdna` driver exposes DRM fdinfo telemetry
+- **XDNA NPU**: presence detection on `/sys/class/accel`; utilization + per-context table when the `amdxdna` driver exposes DRM fdinfo telemetry, or two compact rows when no context is active
+- **Space-saving layout**: every row saved above goes to the process table —
+  the CPU/GPU/NPU sections keep only what they need and PROCESSES fills the
+  rest of the screen.
 - **Process table with unified-memory totals**: every process (not just DRM
   clients), with `MEM` + `SWAP` + `VRAM` + `GTT` rolled into a `TOTAL`
   column; walk columns with `←`/`→` to sort each one biggest-first

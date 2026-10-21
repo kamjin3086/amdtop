@@ -52,10 +52,10 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // each GPU = 6-row band
+    // each GPU = 5-row band (the graphs are labelled by the bars above them)
     let bands = Layout::default()
         .direction(Direction::Vertical)
-        .constraints((0..app.gpus.len()).map(|_| Constraint::Length(6)))
+        .constraints((0..app.gpus.len()).map(|_| Constraint::Length(5)))
         .split(inner);
 
     for (i, gpu) in app.gpus.iter().enumerate() {
@@ -172,7 +172,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
                 Constraint::Length(1), // GPU bar
                 Constraint::Length(1), // MEM bar
                 Constraint::Length(3), // graphs (side by side)
-                Constraint::Length(1), // labels
             ])
             .split(cols[1]);
 
@@ -201,45 +200,44 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
             right[1],
         );
 
-        // graphs side by side
+        // graphs side by side, each with its label on the row below: the
+        // graphs stay three rows tall in total, so the labels are free.
         let gcols = Layout::default()
             .direction(Direction::Horizontal)
             .spacing(2)
             .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
             .split(right[2]);
-        render_graph(
-            f,
-            gcols[0],
-            gpu.hist_gpu
-                .braille_graph(gcols[0].width as usize, 3, app.theme.gpu()),
-        );
-        render_graph(
-            f,
-            gcols[1],
-            gpu.hist_mem
-                .braille_graph(gcols[1].width as usize, 3, app.theme.used()),
-        );
-
-        // labels below each graph
-        let lcols = Layout::default()
-            .direction(Direction::Horizontal)
-            .spacing(2)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(right[3]);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "GPU util",
-                Style::default().fg(app.theme.gpu().sample(0.6)),
-            ))),
-            lcols[0],
-        );
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "MEM",
-                Style::default().fg(app.theme.used().sample(0.6)),
-            ))),
-            lcols[1],
-        );
+        for (index, column) in gcols.iter().enumerate() {
+            let graph_area = Rect {
+                height: 2,
+                ..*column
+            };
+            let label_area = Rect {
+                y: column.y + 2,
+                height: 1,
+                ..*column
+            };
+            let (history, color, text) = if index == 0 {
+                (
+                    gpu.hist_gpu
+                        .braille_graph(column.width as usize, 2, app.theme.gpu()),
+                    app.theme.gpu().sample(0.6),
+                    "GPU util",
+                )
+            } else {
+                (
+                    gpu.hist_mem
+                        .braille_graph(column.width as usize, 2, app.theme.used()),
+                    app.theme.used().sample(0.6),
+                    "MEM",
+                )
+            };
+            render_graph(f, graph_area, history);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
+                label_area,
+            );
+        }
     }
 }
 
@@ -296,7 +294,6 @@ fn draw_unavailable_gpu(
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(1),
         ])
         .split(cols[1]);
     let width = cols[1].width as usize;

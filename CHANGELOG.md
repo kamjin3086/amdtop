@@ -34,10 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supervised unit whose restart policy may bring it back.
 - `a` toggles between all processes and GPU clients only; `j`/`k`,
   `PgUp`/`PgDn`, `Home`/`End` scroll the list.
-- The process-table sort column and filter persist in `state.json`.
+- The process-table sort column and filter persist in `state.json`. The panel
+  border shows `Esc clear` while a column sort is active, and the footer lists
+  the process shortcuts (including `Esc clear`) whenever PROCESSES is focused.
 
 ### Changed
 
+- The process table now gets roughly twice the rows on a 50-line terminal: CPU
+  frequency/temp/power/load moved into the CPU box title, MEM and SWP share a
+  row, the core grid grows columns on wide terminals (32 cores: 4 rows, was 8),
+  an idle NPU collapses to two rows, and each GPU band lost its label row while
+  keeping the graph labels.
 - `Esc` is now a two-stage key: it clears the process sort first and only
   quits when there is nothing left to cancel.
 

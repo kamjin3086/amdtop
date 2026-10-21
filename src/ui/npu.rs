@@ -18,6 +18,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     let npu = app.npu_info.as_ref();
     let fdinfo_supported = npu.is_some_and(|n| n.fdinfo_supported);
 
+    // An idle NPU does not need four identity lines plus an empty context
+    // table; one summary line and the gauge are enough.
+    if !app.is_collapsed(Section::Npu) && npu_ctx_count(app) == 0 {
+        draw_idle(f, inner, app);
+        return;
+    }
+
     if app.is_collapsed(Section::Npu) {
         let pct_span = if fdinfo_supported {
             let npu_pct = app.hist_npu.latest() as f64;
@@ -189,6 +196,55 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     )
     .header(header);
     f.render_widget(table, top_table[1]);
+}
+
+fn draw_idle(f: &mut Frame, inner: Rect, app: &App) {
+    let npu = app.npu_info.as_ref();
+    let fdinfo_supported = npu.is_some_and(|n| n.fdinfo_supported);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(inner);
+
+    // The device name often already starts with "NPU"; do not print "NPU NPU".
+    let name = npu
+        .map(|npu| npu.name.trim_start_matches("NPU ").trim())
+        .unwrap_or("XDNA");
+    let firmware = npu
+        .and_then(|npu| npu.fw_version.as_deref())
+        .unwrap_or("unknown");
+    let bdf = npu.map_or("unknown", |npu| npu.bdf.as_str());
+    let status = if fdinfo_supported {
+        "no active contexts"
+    } else {
+        "fdinfo telemetry unavailable"
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " NPU ",
+                Style::default()
+                    .fg(app.theme.hi_fg())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(name, Style::default().fg(app.theme.title())),
+            Span::styled(
+                format!("   fw {firmware}   bdf {bdf}   "),
+                Style::default().fg(app.theme.graph_text()),
+            ),
+            Span::styled(status, Style::default().fg(app.theme.inactive_fg())),
+        ])),
+        rows[0],
+    );
+
+    let npu_pct = fdinfo_supported.then(|| app.hist_npu.latest() as f64);
+    f.render_widget(
+        Paragraph::new(render_bar(
+            app,
+            gauge::Bar::new("NPU", npu_pct, inner.width as usize, Kind::Npu),
+        )),
+        rows[1],
+    );
 }
 
 fn npu_ctx_count(app: &App) -> usize {

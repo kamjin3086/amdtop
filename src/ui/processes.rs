@@ -229,7 +229,14 @@ fn process_block(app: &App, width: u16) -> Block<'static> {
     // nothing from other sections.
     // Keep the border short: the footer carries the key hints while this
     // section is focused, and long titles get clipped by the border corners.
-    let hints = if app.section == Section::Processes || width < 96 {
+    let hints = if app.section == Section::Processes {
+        // The sort is a mode; say how to leave it while it is active.
+        if app.proc_sort.is_some() {
+            " · Esc clear "
+        } else {
+            ""
+        }
+    } else if width < 96 {
         ""
     } else {
         " · tab to focus "

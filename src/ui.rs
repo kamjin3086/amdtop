@@ -32,7 +32,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(build_constraints(app))
+        .constraints(build_constraints(app, area.width))
         .split(area);
 
     let mut idx = 1;
@@ -55,34 +55,43 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn build_constraints(app: &App) -> Vec<Constraint> {
+fn build_constraints(app: &App, width: u16) -> Vec<Constraint> {
     let mut c = vec![Constraint::Length(1)];
-    c.push(section_height(app, Section::Cpu));
-    c.push(section_height(app, Section::Gpu));
+    c.push(section_height(app, Section::Cpu, width));
+    c.push(section_height(app, Section::Gpu, width));
     if app.has_npu {
-        c.push(section_height(app, Section::Npu));
+        c.push(section_height(app, Section::Npu, width));
     }
-    c.push(section_height(app, Section::Processes));
+    c.push(section_height(app, Section::Processes, width));
     c.push(Constraint::Length(1));
     c
 }
 
-fn section_height(app: &App, s: Section) -> Constraint {
+/// Fixed sections get exactly the rows they need; the process table takes the
+/// rest, so every row saved above becomes a visible process.
+fn section_height(app: &App, s: Section, width: u16) -> Constraint {
     if app.is_collapsed(s) {
         return Constraint::Length(3);
     }
     let inner = match s {
         Section::Cpu => {
-            let (_, rows) = cpu::grid_dimensions(app.cpu.per_core_percent.len().max(1));
-            4 + rows as u16
+            let (_, rows) = cpu::grid_dimensions(
+                app.cpu.per_core_percent.len().max(1),
+                width.saturating_sub(2),
+            );
+            2 + rows as u16 // CPU bar + MEM/SWP row + core grid
         }
-        Section::Gpu => (6 * app.gpus.len() as u16).max(1),
+        Section::Gpu => (5 * app.gpus.len() as u16).max(1),
         Section::Npu => {
             let ctx = app
                 .active_apps()
                 .map(|a| a.stat.xdna_fdinfo.proc_usage.len())
                 .sum::<usize>();
-            5 + ctx.min(6) as u16
+            if ctx == 0 {
+                2 // idle: identity line + gauge
+            } else {
+                5 + ctx.min(6) as u16
+            }
         }
         Section::Processes => return Constraint::Min(13),
     };
@@ -192,28 +201,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("section  ", lbl),
         Span::styled("space ", key),
         Span::styled("collapse  ", lbl),
-        Span::styled("t/T ", key),
-        Span::styled("theme ", lbl),
-        Span::styled(
-            format!("{} ", app.theme_name),
-            Style::default()
-                .fg(app.theme.selected_fg())
-                .add_modifier(Modifier::BOLD)
-                .bg(bg),
-        ),
-        Span::styled(" b ", key),
-        Span::styled("blocks ", lbl),
-        Span::styled(
-            format!("{} ", app.block_style_name()),
-            Style::default()
-                .fg(app.theme.selected_fg())
-                .add_modifier(Modifier::BOLD)
-                .bg(bg),
-        ),
     ];
-    // Process-table actions are contextual: only advertise them while the
-    // PROCESSES section is focused, otherwise they do nothing useful.
+
     if app.section == Section::Processes {
+        // While the process table is focused its keys matter more than the
+        // theme/block shortcuts, and the narrower footer never gets clipped.
         spans.extend([
             Span::styled(" d ", key),
             Span::styled("detail  ", lbl),
@@ -221,10 +213,35 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("stop  ", lbl),
             Span::styled("←/→ ", key),
             Span::styled("sort  ", lbl),
-            Span::styled("a ", key),
-            Span::styled("all/gpu", lbl),
+        ]);
+        // Only offer the escape hatch while a column sort is actually active.
+        if app.proc_sort.is_some() {
+            spans.extend([Span::styled(" Esc ", key), Span::styled("clear  ", lbl)]);
+        }
+        spans.extend([Span::styled("a ", key), Span::styled("all/gpu", lbl)]);
+    } else {
+        spans.extend([
+            Span::styled("t/T ", key),
+            Span::styled("theme ", lbl),
+            Span::styled(
+                format!("{} ", app.theme_name),
+                Style::default()
+                    .fg(app.theme.selected_fg())
+                    .add_modifier(Modifier::BOLD)
+                    .bg(bg),
+            ),
+            Span::styled(" b ", key),
+            Span::styled("blocks ", lbl),
+            Span::styled(
+                format!("{} ", app.block_style_name()),
+                Style::default()
+                    .fg(app.theme.selected_fg())
+                    .add_modifier(Modifier::BOLD)
+                    .bg(bg),
+            ),
         ]);
     }
+
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
         area,

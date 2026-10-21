@@ -14,61 +14,9 @@ const CPU_VALUE_WIDTH: usize = 15;
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     let title = format!("CPU  {}", short_model(&app.cpu_model));
-    let block = section_block(app, Section::Cpu, &title, SectionBox::Cpu);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
 
-    if app.is_collapsed(Section::Cpu) {
-        let line = Line::from(vec![
-            Span::styled(
-                format!(" {:>3.0}% ", app.cpu.cpu_percent.round()),
-                Style::default().fg(app.theme.util_color(app.cpu.cpu_percent, UtilKind::Cpu)),
-            ),
-            Span::styled(
-                format!(
-                    "load {:.2} {:.2} {:.2}  ",
-                    app.mem.load1, app.mem.load5, app.mem.load15
-                ),
-                Style::default().fg(app.theme.graph_text()),
-            ),
-            Span::styled(
-                format!(
-                    "MEM {:.1}G/{:.0}G  SWP {:.1}G/{:.0}G",
-                    app.mem.mem_used_gb(),
-                    app.mem.mem_total_gb(),
-                    app.mem.swap_used_gb(),
-                    app.mem.swap_total_gb()
-                ),
-                Style::default().fg(app.theme.proc_misc()),
-            ),
-        ]);
-        f.render_widget(Paragraph::new(line), inner);
-        return;
-    }
-
-    let w = inner.width as usize;
-    let rl = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // CPU bar
-            Constraint::Length(1), // stats
-            Constraint::Length(1), // MEM
-            Constraint::Length(1), // SWP
-            Constraint::Min(1),    // per-core grid
-        ])
-        .split(inner);
-
-    // CPU aggregate bar (reserve same value field as MEM/SWP so tracks align)
-    f.render_widget(
-        Paragraph::new(render_bar(
-            app,
-            gauge::Bar::new("CPU", Some(app.cpu.cpu_percent), w, Kind::Cpu)
-                .with_value("", CPU_VALUE_WIDTH),
-        )),
-        rl[0],
-    );
-
-    // libamdgpu_top exposes CPU sensors only through an APU device.
+    // Frequency/temp/power/load ride along in the box title instead of
+    // spending a whole content row on them.
     let cpu_sensors = app
         .active_apps()
         .find(|app| app.device_info.is_apu)
@@ -107,15 +55,72 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(
             format!(
-                " load {:.2} {:.2} {:.2}",
+                " load {:.2} {:.2} {:.2} ",
                 app.mem.load1, app.mem.load5, app.mem.load15
             ),
             Style::default().fg(app.theme.graph_text()),
         ),
     ]);
-    f.render_widget(Paragraph::new(stats), rl[1]);
 
-    // MEM + SWP bars with absolute numbers (fixed value field => aligned tracks)
+    let block = section_block(app, Section::Cpu, &title, SectionBox::Cpu).title_top(stats);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.is_collapsed(Section::Cpu) {
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {:>3.0}% ", app.cpu.cpu_percent.round()),
+                Style::default().fg(app.theme.util_color(app.cpu.cpu_percent, UtilKind::Cpu)),
+            ),
+            Span::styled(
+                format!(
+                    "load {:.2} {:.2} {:.2}  ",
+                    app.mem.load1, app.mem.load5, app.mem.load15
+                ),
+                Style::default().fg(app.theme.graph_text()),
+            ),
+            Span::styled(
+                format!(
+                    "MEM {:.1}G/{:.0}G  SWP {:.1}G/{:.0}G",
+                    app.mem.mem_used_gb(),
+                    app.mem.mem_total_gb(),
+                    app.mem.swap_used_gb(),
+                    app.mem.swap_total_gb()
+                ),
+                Style::default().fg(app.theme.proc_misc()),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+
+    let w = inner.width as usize;
+    let rl = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // CPU bar
+            Constraint::Length(1), // MEM + SWP side by side
+            Constraint::Min(1),    // per-core grid
+        ])
+        .split(inner);
+
+    // CPU aggregate bar (reserve same value field as MEM/SWP so tracks align)
+    f.render_widget(
+        Paragraph::new(render_bar(
+            app,
+            gauge::Bar::new("CPU", Some(app.cpu.cpu_percent), w, Kind::Cpu)
+                .with_value("", CPU_VALUE_WIDTH),
+        )),
+        rl[0],
+    );
+
+    // MEM + SWP share one row: half a bar each is still plenty to see a trend,
+    // and it buys a row for the process table.
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .spacing(2)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(rl[1]);
     let mem_val = format!(
         "{} / {}",
         fmt_gb(app.mem.mem_used_gb()),
@@ -124,10 +129,15 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(render_bar(
             app,
-            gauge::Bar::new("MEM", Some(app.mem.mem_used_pct()), w, Kind::Mem)
-                .with_value(&mem_val, CPU_VALUE_WIDTH),
+            gauge::Bar::new(
+                "MEM",
+                Some(app.mem.mem_used_pct()),
+                halves[0].width as usize,
+                Kind::Mem,
+            )
+            .with_value(&mem_val, CPU_VALUE_WIDTH),
         )),
-        rl[2],
+        halves[0],
     );
     let swp_val = format!(
         "{} / {}",
@@ -137,32 +147,42 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(render_bar(
             app,
-            gauge::Bar::new("SWP", Some(app.mem.swap_used_pct()), w, Kind::Mem)
-                .with_value(&swp_val, CPU_VALUE_WIDTH),
+            gauge::Bar::new(
+                "SWP",
+                Some(app.mem.swap_used_pct()),
+                halves[1].width as usize,
+                Kind::Mem,
+            )
+            .with_value(&swp_val, CPU_VALUE_WIDTH),
         )),
-        rl[3],
+        halves[1],
     );
 
     // per-core grid (btop-style)
-    draw_core_grid(f, rl[4], app);
+    draw_core_grid(f, rl[2], app, inner.width);
 }
 
-/// Grid dimensions: aim for <= 8 rows, columns grow with core count.
-pub(super) fn grid_dimensions(n: usize) -> (usize, usize) {
+/// Grid dimensions. A core cell needs about 24 columns before the bar gets
+/// too short, so wide terminals use more columns and fewer rows instead of
+/// always spending eight rows on the core list.
+pub(super) fn grid_dimensions(n: usize, width: u16) -> (usize, usize) {
     if n == 0 {
         return (1, 1);
     }
-    let cols = n.div_ceil(8).max(1);
+    // ~21 columns per core cell (label + bar + percent) before the bar gets
+    // too short to read.
+    let max_cols = ((width as usize) / 21).max(1);
+    let cols = n.div_ceil(4).clamp(1, max_cols);
     let rows = n.div_ceil(cols);
     (cols, rows)
 }
 
-fn draw_core_grid(f: &mut Frame, area: Rect, app: &App) {
+fn draw_core_grid(f: &mut Frame, area: Rect, app: &App, width: u16) {
     let n = app.cpu.per_core_percent.len();
     if n == 0 || area.height == 0 {
         return;
     }
-    let (cols, rows) = grid_dimensions(n);
+    let (cols, rows) = grid_dimensions(n, width);
     let col_areas = Layout::default()
         .direction(Direction::Horizontal)
         .spacing(2) // gutter between core columns
@@ -226,11 +246,17 @@ mod tests {
     use super::{fmt_gb, grid_dimensions, short_model};
 
     #[test]
-    fn core_grid_keeps_at_most_eight_rows() {
-        assert_eq!(grid_dimensions(0), (1, 1));
-        assert_eq!(grid_dimensions(8), (1, 8));
-        assert_eq!(grid_dimensions(9), (2, 5));
-        assert_eq!(grid_dimensions(32), (4, 8));
+    fn core_grid_uses_more_columns_when_the_terminal_is_wide() {
+        assert_eq!(grid_dimensions(0, 200), (1, 1));
+        // narrow: never more than ~8 rows
+        assert_eq!(grid_dimensions(8, 80), (2, 4));
+        assert_eq!(grid_dimensions(32, 100), (4, 8));
+        // wide: 8 columns for 32 cores, four rows
+        assert_eq!(grid_dimensions(32, 200), (8, 4));
+        // very wide: more columns, still at most eight rows
+        let (cols, rows) = grid_dimensions(64, 200);
+        assert!(cols >= 8, "expected >= 8 columns, got {cols}");
+        assert!(rows <= 8, "expected <= 8 rows, got {rows}");
     }
 
     #[test]
