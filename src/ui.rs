@@ -18,6 +18,7 @@ use crate::gauge;
 use crate::theme::SectionBox;
 
 mod cpu;
+mod detail;
 mod gpu;
 mod kill;
 mod npu;

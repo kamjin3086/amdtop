@@ -15,7 +15,7 @@ use crate::config::CollapseState;
 use crate::cpu::{CpuSampler, SystemMem, cpu_model};
 use crate::history::History;
 use crate::kill::{self, KillTarget};
-use crate::processes::{self, GpuProc, ProcRow, SortKey};
+use crate::processes::{self, GpuProc, ProcDetail, ProcRow, SortKey};
 use crate::theme::{DEFAULT_THEME, Theme};
 
 const HISTORY_CAPACITY: usize = 80;
@@ -81,6 +81,8 @@ pub struct App {
     pub proc_state: TableState,
     /// Non-empty while the "stop process?" confirmation is on screen.
     pub kill_prompt: Option<KillTarget>,
+    /// `Some` while the detail pane under the table is open.
+    pub proc_detail: Option<ProcDetail>,
     /// Transient result of the last action (SIGTERM sent, refusal, …).
     notice: Option<(String, Instant)>,
     pub collapse: CollapseState,
@@ -142,6 +144,7 @@ impl App {
             proc_all,
             proc_state: TableState::default(),
             kill_prompt: None,
+            proc_detail: None,
             notice: None,
             collapse,
             section: Section::Gpu,
@@ -314,6 +317,7 @@ impl App {
         self.proc_rows = processes::collect(&gpu_map, !self.proc_all);
         self.sort_proc_rows();
         self.clamp_proc_selection();
+        self.sync_proc_detail();
     }
 
     fn sort_proc_rows(&mut self) {
@@ -401,6 +405,7 @@ impl App {
         let current = self.proc_state.selected().unwrap_or(0) as isize;
         self.proc_state
             .select(Some((current + delta).clamp(0, last) as usize));
+        self.sync_proc_detail();
     }
 
     pub fn proc_select_edge(&mut self, last: bool) {
@@ -410,6 +415,7 @@ impl App {
         }
         let index = if last { self.proc_rows.len() - 1 } else { 0 };
         self.proc_state.select(Some(index));
+        self.sync_proc_detail();
     }
 
     /// Row currently under the cursor.
@@ -419,18 +425,44 @@ impl App {
             .and_then(|index| self.proc_rows.get(index))
     }
 
+    /// `d`: show / hide the detail pane for the selected process.
+    pub fn toggle_proc_detail(&mut self) {
+        if self.proc_detail.is_some() {
+            self.proc_detail = None;
+            return;
+        }
+        if let Some(row) = self.selected_proc() {
+            self.proc_detail = processes::collect_detail(row.pid, row.gpu.clone());
+        }
+    }
+
+    /// Re-read the detail pane for whatever row is selected now.
+    fn sync_proc_detail(&mut self) {
+        if self.proc_detail.is_none() {
+            return;
+        }
+        let Some(row) = self.selected_proc() else {
+            self.proc_detail = None;
+            return;
+        };
+        let (pid, gpu) = (row.pid, row.gpu.clone());
+        self.proc_detail = processes::collect_detail(pid, gpu);
+    }
+
     /// `x`: open the confirmation dialog for the selected process.
     pub fn request_kill(&mut self) {
         let Some(row) = self.selected_proc() else {
             self.set_notice("no process selected".to_string());
             return;
         };
+        let unit = processes::cgroup_info(row.pid);
         let target = KillTarget {
             pid: row.pid,
             name: row.name.clone(),
             total_kb: row.total_kb(),
             mem_kb: row.mem_kb,
             swap_kb: row.swap_kb,
+            unit: unit.may_restart().then_some(unit.unit),
         };
         match kill::check_target(row.pid, row.uid, kill::effective_uid(), kill::self_pid()) {
             Ok(()) => self.kill_prompt = Some(target),

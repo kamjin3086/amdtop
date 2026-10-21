@@ -123,6 +123,7 @@ system-wide numbering. Use the displayed PCI BDF as the authoritative mapping.
 | `←` / `→` | (PROCESSES focused) move the sort cursor across columns |
 | `Esc` | (PROCESSES) clear the sort; otherwise quit |
 | `a` | (PROCESSES) show all processes / GPU clients only |
+| `d` | (PROCESSES) show / hide the detail pane for the selected process |
 | `x` | (PROCESSES) stop the selected process — asks first, sends `SIGTERM` |
 | `j` `k`, `PgUp` `PgDn`, `Home` `End` | (PROCESSES) scroll the list |
 
@@ -166,6 +167,26 @@ rows over-counts memory that several processes map. Use it to rank
 processes, not to compute the system total — the CPU section's MEM/SWP bars
 remain the authoritative system figures.
 
+### Detail pane
+
+Press `d` to open a full-width pane directly under the table. It follows the
+selection, so `j`/`k` walks processes while the pane stays in sync:
+
+```text
+ state S   uid 1000   threads 7   ppid 1 (systemd)   age 3h07m   fds 120
+ exe  /usr/bin/python3
+ cwd  /home/kamjin/projects
+ cmd  python3 -m http.server 8000
+ mem  RSS 909M   PSS 908M   HWM 909M   SWAP 0   VmSize 1.2G
+ gpu  GTT 4.6G   VRAM 28M   GFX 0%   COMP 0%   DMA 0%   CPU 0%
+ unit lemond.service   stop with: systemctl --user stop lemond
+ io   read 1.2M   write 4K
+```
+
+The `unit` line is the answer to "how do I really stop this?" — amdtop shows
+the owning systemd unit or container scope and the command that manages it,
+but never runs service managers itself (see below).
+
 ### Stopping a process (graceful only)
 
 Press `x` on the selected row to open a confirmation dialog. `y` or `Enter`
@@ -182,6 +203,16 @@ sends **SIGTERM**; `n` or `Esc` cancels.
 - The result is reported in the panel border (`SIGTERM sent to …`,
   `permission denied`, `process already exited`) for a few seconds, and the
   row disappears on the next sample.
+- If the process belongs to a supervised unit (a `.service`, or a Docker
+  scope), the dialog says so: the supervisor's restart policy may bring it
+  straight back.
+
+amdtop deliberately does **not** call `systemctl`, `docker` or similar.
+`systemctl stop` sends its own `SIGTERM` and then a `SIGKILL` after
+`TimeoutStopSec`, and `docker stop` force-kills after 10s by default — both
+break the "ask, never force" rule. Stopping a *unit* is also a different
+intent from stopping a *process* (restart policies, dependencies, socket
+activation). So the panel names the unit and the command; you decide.
 
 ## Configuration
 

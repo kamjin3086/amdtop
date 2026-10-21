@@ -20,11 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   left to right and sort the focused column biggest-first, `Esc` clears the
   sort. The active column is drawn as an inverted header cell and the state is
   shown in the panel border.
+- `d` opens a detail pane under the table for the selected process: command
+  line, executable, cwd, state/threads/ppid/age/fds, RSS/PSS/HWM/VmSize,
+  GPU usage, io counters, and the owning systemd unit or container scope with
+  the command that manages it.
 - `x` stops the selected process: a small confirmation dialog names the
   process and its memory footprint, and only `SIGTERM` is sent so the process
   can shut down gracefully. Init, amdtop itself, and other users' processes
   are refused; the result (sent / permission denied / already exited) is
-  shown in the panel border.
+  shown in the panel border. The dialog warns when the target belongs to a
+  supervised unit whose restart policy may bring it back.
 - `a` toggles between all processes and GPU clients only; `j`/`k`,
   `PgUp`/`PgDn`, `Home`/`End` scroll the list.
 - The process-table sort column and filter persist in `state.json`.

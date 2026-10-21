@@ -17,6 +17,8 @@ pub struct KillTarget {
     pub total_kb: u64,
     pub mem_kb: u64,
     pub swap_kb: u64,
+    /// systemd unit / container scope, so the dialog can warn about restarts.
+    pub unit: Option<String>,
 }
 
 /// Why a process may not be signalled.

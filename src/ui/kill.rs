@@ -13,22 +13,23 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
 use crate::kill::KillTarget;
+use crate::processes::shorten_unit;
 
 use super::processes::fmt_kib;
 
 const WIDTH: u16 = 64;
-const HEIGHT: u16 = 9;
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &App, target: &KillTarget) {
-    if area.width < 32 || area.height < HEIGHT + 2 {
+    let height = 9 + u16::from(target.unit.is_some());
+    if area.width < 32 || area.height < height + 2 {
         return;
     }
     let width = WIDTH.min(area.width - 2);
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
-        area.y + (area.height - HEIGHT) / 2,
+        area.y + (area.height - height) / 2,
         width,
-        HEIGHT,
+        height,
     );
     f.render_widget(Clear, rect);
 
@@ -43,7 +44,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App, target: &KillTarget) {
         .add_modifier(Modifier::BOLD);
 
     let name: String = target.name.chars().take(28).collect();
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled(name, accent),
             Span::styled(format!("   pid {}", target.pid), text),
@@ -66,14 +67,23 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App, target: &KillTarget) {
             "Sends SIGTERM; the process can clean up and exit on its own.",
             dim,
         )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" y / Enter ", key),
-            Span::styled("stop      ", text),
-            Span::styled(" n / Esc ", key),
-            Span::styled("cancel", text),
-        ]),
     ];
+    if let Some(unit) = &target.unit {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "managed by {}: a restart policy may restart it",
+                shorten_unit(unit)
+            ),
+            dim,
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" y / Enter ", key),
+        Span::styled("stop      ", text),
+        Span::styled(" n / Esc ", key),
+        Span::styled("cancel", text),
+    ]));
 
     let block = Block::default()
         .borders(Borders::ALL)

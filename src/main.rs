@@ -223,6 +223,8 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
                     KeyCode::Right | KeyCode::Char('l') => app.proc_sort_right(),
                     KeyCode::Left | KeyCode::Char('h') => app.proc_sort_left(),
                     KeyCode::Char('a') => app.toggle_proc_filter(),
+                    // Detail pane for the selected process.
+                    KeyCode::Char('d') => app.toggle_proc_detail(),
                     // Graceful stop: opens a confirmation dialog first.
                     KeyCode::Char('x') => app.request_kill(),
                     // Row scrolling. Works without focusing the panel first so

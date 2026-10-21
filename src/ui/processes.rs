@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
@@ -8,6 +8,7 @@ use crate::app::{App, Section};
 use crate::processes::{ProcRow, SortKey};
 use crate::theme::SectionBox;
 
+use super::detail;
 use super::section_block;
 
 /// One display column. Identity columns are not sortable; the memory block
@@ -172,6 +173,16 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let widths = columns.iter().map(|column| COLUMNS[*column].width);
+    // Detail pane sits directly under the table, full width, only while open.
+    let detail_height = if app.proc_detail.is_some() {
+        detail::HEIGHT.min(inner.height.saturating_sub(3))
+    } else {
+        0
+    };
+    let parts =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).split(inner);
+    let table_area = parts[0];
+
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
@@ -182,7 +193,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
 
-    f.render_stateful_widget(table, inner, &mut app.proc_state);
+    f.render_stateful_widget(table, table_area, &mut app.proc_state);
+
+    if detail_height > 0
+        && let Some(detail) = app.proc_detail.as_ref()
+    {
+        detail::draw(f, parts[1], app, detail);
+    }
 }
 
 /// Box title carries the current sort column, direction and filter, plus the

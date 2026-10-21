@@ -311,6 +311,314 @@ pub fn sort_by_pid(rows: &mut [ProcRow]) {
     rows.sort_by_key(|row| row.pid);
 }
 
+/// Everything the detail pane shows about one process.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcDetail {
+    pub pid: i32,
+    pub name: String,
+    pub state: char,
+    pub uid: u32,
+    pub ppid: i32,
+    pub parent: String,
+    pub threads: u32,
+    pub exe: Option<String>,
+    pub cwd: Option<String>,
+    pub cmd: String,
+    pub vm_size_kb: u64,
+    pub rss_kb: u64,
+    pub hwm_kb: u64,
+    pub swap_kb: u64,
+    pub pss_kb: Option<u64>,
+    pub gpu: Option<GpuProc>,
+    /// systemd unit or container scope, plus the command that manages it.
+    pub unit: String,
+    pub unit_hint: Option<String>,
+    pub io: Option<(u64, u64)>,
+    pub fds: Option<usize>,
+    /// Seconds since the process started.
+    pub age_secs: Option<u64>,
+}
+
+/// Parsed `/proc/<pid>/stat` fields the detail pane needs.
+pub fn parse_stat_fields(stat: &str) -> Option<(char, i32, u32, u64)> {
+    // `comm` may contain spaces and parentheses, so split after the last ')'.
+    let close = stat.rfind(')')?;
+    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+    let state = fields.first()?.chars().next()?;
+    let ppid = fields.get(1)?.parse().ok()?;
+    let threads = fields.get(17)?.parse().ok()?;
+    let start_ticks = fields.get(19)?.parse().ok()?;
+    Some((state, ppid, threads, start_ticks))
+}
+
+/// Join a NUL-separated `/proc/<pid>/cmdline` into one readable line.
+pub fn parse_cmdline(bytes: &[u8]) -> String {
+    let mut command = String::new();
+    for part in bytes.split(|byte| *byte == 0) {
+        if part.is_empty() {
+            continue;
+        }
+        if !command.is_empty() {
+            command.push(' ');
+        }
+        command.push_str(&String::from_utf8_lossy(part));
+    }
+    command
+}
+
+/// `read_bytes` / `write_bytes` from `/proc/<pid>/io`.
+pub fn parse_io(text: &str) -> Option<(u64, u64)> {
+    let mut read = None;
+    let mut write = None;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("read_bytes:") {
+            read = value.trim().parse().ok();
+        } else if let Some(value) = line.strip_prefix("write_bytes:") {
+            write = value.trim().parse().ok();
+        }
+    }
+    Some((read?, write?))
+}
+
+/// systemd unit (or container scope) responsible for a cgroup path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnitInfo {
+    pub unit: String,
+    /// Command a human would use to manage it, e.g. `systemctl --user stop foo`.
+    pub hint: Option<String>,
+}
+
+/// `0::/user.slice/.../app-foo.scope` -> the deepest `.service` / `.scope`
+/// plus a hint for the right stop command.
+pub fn parse_cgroup(text: &str) -> UnitInfo {
+    let path = text
+        .lines()
+        .next()
+        .map(|line| line.rsplit("::").next().unwrap_or(line))
+        .unwrap_or_default();
+    let unit = path
+        .split('/')
+        .rev()
+        .find(|part| part.ends_with(".service") || part.ends_with(".scope"))
+        .unwrap_or_default()
+        .to_string();
+
+    if unit.is_empty() {
+        return UnitInfo::default();
+    }
+
+    let hint = if let Some(id) = unit
+        .strip_prefix("docker-")
+        .or_else(|| unit.strip_prefix("libpod-"))
+    {
+        let id = id.split('.').next().unwrap_or(id);
+        Some(format!("docker stop {}", &id[..id.len().min(12)]))
+    } else if unit.ends_with(".service") {
+        let name = &unit[..unit.len() - ".service".len()];
+        if path.contains("user@") || path.contains("/user.slice/") {
+            Some(format!("systemctl --user stop {name}"))
+        } else {
+            Some(format!("systemctl stop {name}"))
+        }
+    } else {
+        None
+    };
+
+    UnitInfo { unit, hint }
+}
+
+impl UnitInfo {
+    /// Units whose supervisor is known to restart processes on its own.
+    pub fn may_restart(&self) -> bool {
+        self.unit.ends_with(".service")
+            || self.unit.starts_with("docker-")
+            || self.unit.starts_with("libpod-")
+    }
+}
+
+/// Short display form: container scopes are 76 characters of hex, which is
+/// useless in a table, so show `docker:<id>` instead.
+pub fn shorten_unit(unit: &str) -> String {
+    for prefix in ["docker-", "libpod-"] {
+        if let Some(id) = unit.strip_prefix(prefix) {
+            return format!("docker:{}", &id[..id.len().min(12)]);
+        }
+    }
+    unit.to_string()
+}
+
+/// Human-readable process age: `45s`, `12m`, `3h07m`, `2d4h`.
+pub fn format_age(secs: u64) -> String {
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3600;
+    let minutes = (secs % 3600) / 60;
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{}s", secs % 60)
+    }
+}
+
+/// The subset of `/proc/<pid>/status` used by the detail pane.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DetailStatus {
+    pub name: String,
+    pub uid: u32,
+    pub vm_size_kb: u64,
+    pub rss_kb: u64,
+    pub hwm_kb: u64,
+    pub swap_kb: u64,
+}
+
+pub fn parse_detail_status(text: &str) -> DetailStatus {
+    let mut parsed = DetailStatus::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match key {
+            "Name" => parsed.name = value.to_string(),
+            "Uid" => {
+                parsed.uid = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|uid| uid.parse().ok())
+                    .unwrap_or(0);
+            }
+            "VmSize" => parsed.vm_size_kb = parse_kb(value).unwrap_or(0),
+            "VmRSS" => parsed.rss_kb = parse_kb(value).unwrap_or(0),
+            "VmHWM" => parsed.hwm_kb = parse_kb(value).unwrap_or(0),
+            "VmSwap" => parsed.swap_kb = parse_kb(value).unwrap_or(0),
+            _ => {}
+        }
+    }
+    parsed
+}
+
+fn parse_pss(text: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let value = line.strip_prefix("Pss:")?;
+        parse_kb(value.trim())
+    })
+}
+
+/// Unit information for one live process.
+pub fn cgroup_info(pid: i32) -> UnitInfo {
+    fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .map(|text| parse_cgroup(&text))
+        .unwrap_or_default()
+}
+
+/// Collect the detail pane for one process.
+pub fn collect_detail(pid: i32, gpu: Option<GpuProc>) -> Option<ProcDetail> {
+    collect_detail_at(Path::new("/proc"), pid, gpu, now_secs())
+}
+
+pub fn collect_detail_at(
+    root: &Path,
+    pid: i32,
+    gpu: Option<GpuProc>,
+    now: u64,
+) -> Option<ProcDetail> {
+    let dir = root.join(pid.to_string());
+    let status = fs::read_to_string(dir.join("status")).ok()?;
+    let status = parse_detail_status(&status);
+    let stat = fs::read_to_string(dir.join("stat"))
+        .ok()
+        .and_then(|text| parse_stat_fields(&text));
+    let (state, ppid, threads, start_ticks) = stat.unwrap_or(('?', 0, 0, 0));
+
+    let age_secs = if start_ticks > 0 {
+        let hz = clock_ticks_per_second();
+        boot_time(root)
+            .map(|boot| boot + start_ticks / hz)
+            .and_then(|started| now.checked_sub(started))
+    } else {
+        None
+    };
+
+    let parent = if ppid > 0 {
+        fs::read_to_string(root.join(ppid.to_string()).join("comm"))
+            .map(|name| name.trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let cmd = fs::read(dir.join("cmdline"))
+        .map(|bytes| parse_cmdline(&bytes))
+        .unwrap_or_default();
+    let cmd = if cmd.is_empty() {
+        format!("[{}]", status.name)
+    } else {
+        cmd
+    };
+
+    let unit = fs::read_to_string(dir.join("cgroup"))
+        .map(|text| parse_cgroup(&text))
+        .unwrap_or_default();
+
+    Some(ProcDetail {
+        pid,
+        name: status.name,
+        state,
+        uid: status.uid,
+        ppid,
+        parent,
+        threads,
+        exe: fs::read_link(dir.join("exe"))
+            .ok()
+            .map(|p| p.display().to_string()),
+        cwd: fs::read_link(dir.join("cwd"))
+            .ok()
+            .map(|p| p.display().to_string()),
+        cmd,
+        vm_size_kb: status.vm_size_kb,
+        rss_kb: status.rss_kb,
+        hwm_kb: status.hwm_kb,
+        swap_kb: status.swap_kb,
+        pss_kb: fs::read_to_string(dir.join("smaps_rollup"))
+            .ok()
+            .and_then(|text| parse_pss(&text)),
+        gpu,
+        unit: unit.unit,
+        unit_hint: unit.hint,
+        io: fs::read_to_string(dir.join("io"))
+            .ok()
+            .and_then(|text| parse_io(&text)),
+        fds: fs::read_dir(dir.join("fd"))
+            .ok()
+            .map(|entries| entries.count()),
+        age_secs,
+    })
+}
+
+fn clock_ticks_per_second() -> u64 {
+    // SAFETY: sysconf has no preconditions.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if hz > 0 { hz as u64 } else { 100 }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn boot_time(root: &Path) -> Option<u64> {
+    let text = fs::read_to_string(root.join("stat")).ok()?;
+    text.lines().find_map(|line| {
+        let value = line.strip_prefix("btime ")?;
+        value.trim().parse().ok()
+    })
+}
+
 /// Read `/proc` and return the model used by the panel.
 pub fn collect(gpu: &HashMap<i32, GpuProc>, gpu_only: bool) -> Vec<ProcRow> {
     collect_from(Path::new("/proc"), gpu, gpu_only)
@@ -635,6 +943,170 @@ Threads:\t37
             assert_eq!(SortKey::from_id(key.id()), Some(key));
         }
         assert_eq!(SortKey::from_id("nope"), None);
+    }
+
+    #[test]
+    fn parse_stat_handles_a_comm_with_spaces_and_parentheses() {
+        let stat =
+            "123 (my (weird) name) S 1 123 123 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 7 0 5000 0";
+
+        let (state, ppid, threads, start) = parse_stat_fields(stat).expect("parse stat");
+
+        assert_eq!(state, 'S');
+        assert_eq!(ppid, 1);
+        assert_eq!(threads, 7);
+        assert_eq!(start, 5000);
+    }
+
+    #[test]
+    fn cmdline_is_joined_into_one_line() {
+        assert_eq!(
+            parse_cmdline(b"python3\0-c\0print(1)\0"),
+            "python3 -c print(1)"
+        );
+        assert_eq!(parse_cmdline(b""), "");
+    }
+
+    #[test]
+    fn io_reads_byte_counters() {
+        let text = "rchar: 10\nread_bytes: 2048\nwrite_bytes: 4096\n";
+        assert_eq!(parse_io(text), Some((2048, 4096)));
+    }
+
+    #[test]
+    fn cgroup_paths_map_to_a_unit_and_a_management_hint() {
+        let user = parse_cgroup(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/pi-web.service\n",
+        );
+        assert_eq!(user.unit, "pi-web.service");
+        assert_eq!(user.hint.as_deref(), Some("systemctl --user stop pi-web"));
+
+        let system = parse_cgroup("0::/system.slice/sshd.service\n");
+        assert_eq!(system.unit, "sshd.service");
+        assert_eq!(system.hint.as_deref(), Some("systemctl stop sshd"));
+
+        let docker = parse_cgroup(
+            "0::/system.slice/docker-1ecf1a2d9d964c679a818f7b4043394ce9eb82638939ad5ad82335f161f76cb.scope\n",
+        );
+        assert_eq!(
+            docker.unit,
+            "docker-1ecf1a2d9d964c679a818f7b4043394ce9eb82638939ad5ad82335f161f76cb.scope"
+        );
+        assert_eq!(docker.hint.as_deref(), Some("docker stop 1ecf1a2d9d96"));
+
+        assert_eq!(parse_cgroup("0::/\n").unit, "");
+        assert_eq!(parse_cgroup("").unit, "");
+    }
+
+    #[test]
+    fn only_supervised_units_are_flagged_as_restartable() {
+        assert!(parse_cgroup("0::/system.slice/sshd.service").may_restart());
+        assert!(parse_cgroup("0::/system.slice/docker-1ecf1a2d9d96.scope").may_restart());
+        assert!(!parse_cgroup("0::/user.slice/app-gnome-foo-123.scope").may_restart());
+        assert!(!parse_cgroup("0::/init.scope").may_restart());
+        assert!(!parse_cgroup("0::/").may_restart());
+    }
+
+    #[test]
+    fn container_units_are_shortened_for_display() {
+        assert_eq!(
+            shorten_unit("docker-1ecf1a2d9d96aa.scope"),
+            "docker:1ecf1a2d9d96"
+        );
+        assert_eq!(shorten_unit("lemond.service"), "lemond.service");
+        assert_eq!(shorten_unit(""), "");
+    }
+
+    #[test]
+    fn ages_are_rendered_compactly() {
+        assert_eq!(format_age(45), "45s");
+        assert_eq!(format_age(12 * 60), "12m");
+        assert_eq!(format_age(3 * 3600 + 7 * 60), "3h07m");
+        assert_eq!(format_age(2 * 86_400 + 4 * 3600), "2d4h");
+    }
+
+    #[test]
+    fn detail_collects_command_line_unit_io_and_age() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("amdtop-detail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let pid_dir = root.join("123");
+        fs::create_dir_all(pid_dir.join("fd")).unwrap();
+        fs::write(root.join("stat"), "cpu 0 0 0 0 0 0 0 0 0 0\nbtime 1000\n").unwrap();
+        fs::create_dir_all(root.join("1")).unwrap();
+        fs::write(root.join("1/comm"), "systemd\n").unwrap();
+        fs::write(
+            pid_dir.join("status"),
+            "Name:\tpython3\nUid:\t1000\t1000\t1000\t1000\nVmSize:\t1200000 kB\nVmRSS:\t900000 kB\nVmHWM:\t905000 kB\nVmSwap:\t1234 kB\n",
+        )
+        .unwrap();
+        fs::write(
+            pid_dir.join("stat"),
+            "123 (python3) S 1 123 123 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 7 0 5000 0",
+        )
+        .unwrap();
+        fs::write(pid_dir.join("cmdline"), b"python3\0-c\0print(1)\0").unwrap();
+        fs::write(
+            pid_dir.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/lemond.service\n",
+        )
+        .unwrap();
+        fs::write(pid_dir.join("io"), "read_bytes: 2048\nwrite_bytes: 4096\n").unwrap();
+        fs::write(pid_dir.join("smaps_rollup"), "Pss:\t880000 kB\n").unwrap();
+        fs::write(pid_dir.join("fd/0"), "").unwrap();
+        fs::write(pid_dir.join("fd/1"), "").unwrap();
+        symlink("/usr/bin/python3", pid_dir.join("exe")).unwrap();
+        symlink("/home/kamjin", pid_dir.join("cwd")).unwrap();
+
+        let detail = collect_detail_at(&root, 123, None, 2_000).expect("collect detail");
+        let hz = clock_ticks_per_second();
+        let expected_age = 2_000 - (1_000 + 5_000 / hz);
+
+        assert_eq!(detail.name, "python3");
+        assert_eq!(detail.state, 'S');
+        assert_eq!(detail.ppid, 1);
+        assert_eq!(detail.parent, "systemd");
+        assert_eq!(detail.threads, 7);
+        assert_eq!(detail.cmd, "python3 -c print(1)");
+        assert_eq!(detail.exe.as_deref(), Some("/usr/bin/python3"));
+        assert_eq!(detail.cwd.as_deref(), Some("/home/kamjin"));
+        assert_eq!(detail.unit, "lemond.service");
+        assert_eq!(
+            detail.unit_hint.as_deref(),
+            Some("systemctl --user stop lemond")
+        );
+        assert_eq!(detail.rss_kb, 900_000);
+        assert_eq!(detail.hwm_kb, 905_000);
+        assert_eq!(detail.swap_kb, 1_234);
+        assert_eq!(detail.vm_size_kb, 1_200_000);
+        assert_eq!(detail.pss_kb, Some(880_000));
+        assert_eq!(detail.io, Some((2048, 4096)));
+        assert_eq!(detail.fds, Some(2));
+        assert_eq!(detail.age_secs, Some(expected_age));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn kernel_thread_detail_falls_back_to_a_bracketed_name() {
+        let root = std::env::temp_dir().join(format!("amdtop-detail-k{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let pid_dir = root.join("42");
+        fs::create_dir_all(&pid_dir).unwrap();
+        fs::write(
+            pid_dir.join("status"),
+            "Name:\tkworker/R-sync_wq\nUid:\t0\t0\t0\t0\n",
+        )
+        .unwrap();
+
+        let detail = collect_detail_at(&root, 42, None, 2_000).expect("collect detail");
+
+        assert_eq!(detail.cmd, "[kworker/R-sync_wq]");
+        assert_eq!(detail.age_secs, None);
+        assert_eq!(detail.exe, None);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
