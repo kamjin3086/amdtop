@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Process table lists every process, not just DRM clients, so memory hogs
+  without a GPU context (containers, language servers) are visible. Kernel
+  threads and zombies are filtered out because they have no address space.
+- New `TOTAL` column: `MEM + SWAP + VRAM + GTT`, i.e. resident memory, pages
+  compressed into zram, and memory owned by the GPU driver.
+- New `SWAP` column from `VmSwap`; swapped-out pages still occupy physical
+  memory and are otherwise invisible in a resident-memory-only view.
+- Column-cursor sorting in the PROCESSES section: `←`/`→` walk the columns
+  left to right and sort the focused column biggest-first, `Esc` clears the
+  sort. The active column is drawn as an inverted header cell and the state is
+  shown in the panel border.
+- `a` toggles between all processes and GPU clients only; `j`/`k`,
+  `PgUp`/`PgDn`, `Home`/`End` scroll the list.
+- The process-table sort column and filter persist in `state.json`.
+
+### Changed
+
+- `Esc` is now a two-stage key: it clears the process sort first and only
+  quits when there is nothing left to cancel.
+
 ## [0.2.6] - 2026-07-23
 
 ### Added

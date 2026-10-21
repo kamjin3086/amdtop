@@ -1,6 +1,6 @@
 //! Application state: `libamdgpu_top` apps, samplers, history, and UI state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -9,10 +9,12 @@ use std::time::Duration;
 
 use libamdgpu_top::app::{AppAmdgpuTop, AppOption};
 use libamdgpu_top::{DevicePath, stat};
+use ratatui::widgets::TableState;
 
 use crate::config::CollapseState;
 use crate::cpu::{CpuSampler, SystemMem, cpu_model};
 use crate::history::History;
+use crate::processes::{self, GpuProc, ProcRow, SortKey};
 use crate::theme::{DEFAULT_THEME, Theme};
 
 const HISTORY_CAPACITY: usize = 80;
@@ -65,7 +67,15 @@ pub struct App {
     pub gpus: Vec<GpuDevice>,
     pub cpu: CpuSampler,
     pub mem: SystemMem,
-    process_rss_kb: HashMap<i32, u64>,
+    /// Rows behind the PROCESSES panel; every process, GPU client or not.
+    pub proc_rows: Vec<ProcRow>,
+    /// `None` = unsorted (PID order). Sorting is always descending; the
+    /// left/right arrows walk the columns.
+    pub proc_sort: Option<SortKey>,
+    /// `true`: list every process. `false`: only DRM clients.
+    pub proc_all: bool,
+    /// Selected row + scroll offset for the PROCESSES table.
+    pub proc_state: TableState,
     pub collapse: CollapseState,
     pub section: Section,
     pub hist_cpu: History,
@@ -113,12 +123,17 @@ impl App {
         };
         let theme = Theme::load(&theme_name);
         let block_style = collapse.block_style % crate::gauge::BLOCK_STYLES.len();
+        let proc_sort = SortKey::from_id(&collapse.proc_sort);
+        let proc_all = collapse.proc_all;
 
         Self {
             gpus,
             cpu: CpuSampler::default(),
             mem: SystemMem::default(),
-            process_rss_kb: HashMap::new(),
+            proc_rows: Vec::new(),
+            proc_sort,
+            proc_all,
+            proc_state: TableState::default(),
             collapse,
             section: Section::Gpu,
             hist_cpu: History::new(HISTORY_CAPACITY),
@@ -224,7 +239,7 @@ impl App {
         send_process_targets_after_activation(&self.process_index_sender, device_activated, || {
             process_device_paths(&self.gpus)
         });
-        self.sample_process_memory();
+        self.sample_processes();
         self.cpu.tick();
         self.mem.tick();
 
@@ -264,21 +279,128 @@ impl App {
         self.hist_npu.push(npu_sum.clamp(0, 100) as u64);
     }
 
-    fn sample_process_memory(&mut self) {
-        let pids: HashSet<i32> = self
-            .active_apps()
-            .flat_map(|app| &app.stat.fdinfo.proc_usage)
-            .map(|process| process.pid)
-            .collect();
+    fn sample_processes(&mut self) {
+        let mut gpu_map: HashMap<i32, GpuProc> = HashMap::new();
+        for (gpu_index, gpu) in self.gpus.iter().enumerate() {
+            let Some(app) = gpu.app.as_ref() else {
+                continue;
+            };
+            for usage in &app.stat.fdinfo.proc_usage {
+                let entry = GpuProc {
+                    gpu_index,
+                    vram_kb: usage.usage.vram_usage,
+                    gtt_kb: usage.usage.gtt_usage,
+                    gfx: usage.usage.gfx,
+                    compute: usage.usage.compute,
+                    dma: usage.usage.dma,
+                    cpu: usage.usage.cpu,
+                };
+                gpu_map
+                    .entry(usage.pid)
+                    .and_modify(|existing| existing.absorb(&entry))
+                    .or_insert(entry);
+            }
+        }
 
-        self.process_rss_kb = pids
-            .into_iter()
-            .filter_map(|pid| read_process_rss_kb(pid).map(|rss_kb| (pid, rss_kb)))
-            .collect();
+        self.proc_rows = processes::collect(&gpu_map, !self.proc_all);
+        self.sort_proc_rows();
+        self.clamp_proc_selection();
     }
 
-    pub fn process_rss_kb(&self, pid: i32) -> Option<u64> {
-        self.process_rss_kb.get(&pid).copied()
+    fn sort_proc_rows(&mut self) {
+        match self.proc_sort {
+            Some(key) => processes::sort_rows(&mut self.proc_rows, key),
+            None => processes::sort_by_pid(&mut self.proc_rows),
+        }
+    }
+
+    fn clamp_proc_selection(&mut self) {
+        if self.proc_rows.is_empty() {
+            self.proc_state.select(None);
+            return;
+        }
+        let selected = self
+            .proc_state
+            .selected()
+            .unwrap_or(0)
+            .min(self.proc_rows.len() - 1);
+        self.proc_state.select(Some(selected));
+    }
+
+    fn persist_proc_prefs(&mut self) {
+        self.collapse.proc_sort = self
+            .proc_sort
+            .map(|key| key.id().to_string())
+            .unwrap_or_default();
+        self.collapse.proc_all = self.proc_all;
+    }
+
+    /// Right arrow: move the column cursor right and sort that column
+    /// biggest-first. From "no sort" the cursor lands on TOTAL.
+    pub fn proc_sort_right(&mut self) {
+        let next = match self.proc_sort {
+            None => Some(SortKey::Total),
+            Some(key) => Some(key.next_column()),
+        };
+        if next == self.proc_sort {
+            return;
+        }
+        self.proc_sort = next;
+        self.proc_state.select(Some(0));
+        self.sort_proc_rows();
+        self.persist_proc_prefs();
+    }
+
+    /// Left arrow: move the cursor back; left of TOTAL clears the sort.
+    pub fn proc_sort_left(&mut self) {
+        let Some(key) = self.proc_sort else {
+            return;
+        };
+        self.proc_sort = key.prev_column();
+        self.proc_state.select(Some(0));
+        self.sort_proc_rows();
+        self.persist_proc_prefs();
+    }
+
+    /// Esc: drop the column sort and return to the PID-ordered view.
+    /// Returns false when there was nothing to cancel (so Esc can still quit).
+    pub fn cancel_proc_sort(&mut self) -> bool {
+        if self.proc_sort.is_none() {
+            return false;
+        }
+        self.proc_sort = None;
+        self.proc_state.select(Some(0));
+        self.sort_proc_rows();
+        self.persist_proc_prefs();
+        true
+    }
+
+    /// `a`: every process vs. GPU clients only.
+    pub fn toggle_proc_filter(&mut self) {
+        self.proc_all = !self.proc_all;
+        self.proc_state.select(Some(0));
+        self.sample_processes();
+        self.persist_proc_prefs();
+    }
+
+    pub fn proc_scroll(&mut self, delta: isize) {
+        if self.proc_rows.is_empty() {
+            self.proc_state.select(None);
+            return;
+        }
+        let last = (self.proc_rows.len() - 1) as isize;
+        let current = self.proc_state.selected().unwrap_or(0) as isize;
+        self.proc_state
+            .select(Some((current + delta).clamp(0, last) as usize));
+    }
+
+    pub fn proc_select_edge(&mut self, last: bool) {
+        if self.proc_rows.is_empty() {
+            self.proc_state.select(None);
+            return;
+        }
+        let index = if last { self.proc_rows.len() - 1 } else { 0 };
+        self.proc_state.select(Some(index));
     }
 
     pub fn save_state(&self) -> std::io::Result<()> {
@@ -553,22 +675,6 @@ fn read_trim(path: impl AsRef<Path>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn read_process_rss_kb(pid: i32) -> Option<u64> {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    parse_process_rss_kb(&status)
-}
-
-fn parse_process_rss_kb(status: &str) -> Option<u64> {
-    status.lines().find_map(|line| {
-        let mut fields = line.split_whitespace();
-        if fields.next() != Some("VmRSS:") {
-            return None;
-        }
-        let rss_kb = fields.next()?.parse().ok()?;
-        (fields.next() == Some("kB")).then_some(rss_kb)
-    })
-}
-
 fn fdinfo_has_drm_driver(accel_path: &Path) -> bool {
     let Ok(file) = fs::OpenOptions::new()
         .read(true)
@@ -620,8 +726,8 @@ mod tests {
     use std::sync::mpsc::{self, TryRecvError};
 
     use super::{
-        NpuInfo, activate_if_awake, memory_info, pair_by_key, parse_process_rss_kb,
-        same_npu_device, send_process_targets_after_activation,
+        NpuInfo, activate_if_awake, memory_info, pair_by_key, same_npu_device,
+        send_process_targets_after_activation,
     };
 
     #[test]
@@ -768,15 +874,5 @@ mod tests {
     fn memory_info_handles_zero_and_overcommitted_pools() {
         assert_eq!(memory_info(false, (10, 0), (0, 0)).percent, 0.0);
         assert_eq!(memory_info(false, (200, 100), (0, 0)).percent, 100.0);
-    }
-
-    #[test]
-    fn process_rss_parser_reads_resident_system_memory() {
-        let status = "Name:\ttest\nVmSize:\t4096 kB\nVmRSS:\t1536 kB\nThreads:\t2\n";
-
-        assert_eq!(parse_process_rss_kb(status), Some(1536));
-        assert_eq!(parse_process_rss_kb("VmRSS:\tinvalid kB\n"), None);
-        assert_eq!(parse_process_rss_kb("VmRSS:\t1536 MB\n"), None);
-        assert_eq!(parse_process_rss_kb("Name:\ttest\n"), None);
     }
 }

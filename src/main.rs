@@ -14,10 +14,11 @@ mod config;
 mod cpu;
 mod gauge;
 mod history;
+mod processes;
 mod theme;
 mod ui;
 
-use app::App;
+use app::{App, Section};
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -185,11 +186,15 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
             && key.kind == KeyEventKind::Press
         {
             if is_quit_key(&key) {
-                app.save_state()?;
-                return Ok(());
-            }
-
-            if is_device_refresh_key(&key) {
+                // Esc is a two-stage key: it clears the PROCESSES sort first and
+                // only quits when there is nothing left to cancel.
+                if key.code == KeyCode::Esc && app.cancel_proc_sort() {
+                    // sort cleared, keep running
+                } else {
+                    app.save_state()?;
+                    return Ok(());
+                }
+            } else if is_device_refresh_key(&key) {
                 app.refresh_devices();
             } else {
                 match key.code {
@@ -200,6 +205,23 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
                     KeyCode::Char('T') => app.cycle_theme(false)?,
                     KeyCode::Char('b') => app.cycle_block(true)?,
                     KeyCode::Char('B') => app.cycle_block(false)?,
+                    // PROCESSES view: left/right walk the sort column cursor,
+                    // `a` toggles all-vs-GPU, j/k scrolls the list.
+                    KeyCode::Right if app.section == Section::Processes => {
+                        app.proc_sort_right();
+                    }
+                    KeyCode::Left if app.section == Section::Processes => {
+                        app.proc_sort_left();
+                    }
+                    KeyCode::Char('a') => app.toggle_proc_filter(),
+                    // Row scrolling. Works without focusing the panel first so
+                    // the list is usable straight after launch.
+                    KeyCode::Char('j') | KeyCode::Down => app.proc_scroll(1),
+                    KeyCode::Char('k') | KeyCode::Up => app.proc_scroll(-1),
+                    KeyCode::PageDown => app.proc_scroll(10),
+                    KeyCode::PageUp => app.proc_scroll(-10),
+                    KeyCode::Home => app.proc_select_edge(false),
+                    KeyCode::End => app.proc_select_edge(true),
                     _ => {}
                 }
             }

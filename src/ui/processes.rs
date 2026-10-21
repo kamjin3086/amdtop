@@ -1,27 +1,123 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 
 use crate::app::{App, Section};
+use crate::processes::{ProcRow, SortKey};
 use crate::theme::SectionBox;
 
 use super::section_block;
 
-pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
-    let block = section_block(app, Section::Processes, "PROCESSES", SectionBox::Proc);
+/// One display column. Identity columns are not sortable; the memory block
+/// starts at TOTAL so the first right-arrow press is the useful one.
+struct Column {
+    header: &'static str,
+    sort: Option<SortKey>,
+    width: Constraint,
+}
+
+const COLUMNS: [Column; 12] = [
+    Column {
+        header: "GPU",
+        sort: None,
+        width: Constraint::Length(3),
+    },
+    Column {
+        header: "PID",
+        sort: None,
+        width: Constraint::Length(7),
+    },
+    Column {
+        header: "NAME",
+        sort: None,
+        width: Constraint::Min(14),
+    },
+    Column {
+        header: "TOTAL",
+        sort: Some(SortKey::Total),
+        width: Constraint::Length(8),
+    },
+    Column {
+        header: "MEM",
+        sort: Some(SortKey::Mem),
+        width: Constraint::Length(7),
+    },
+    Column {
+        header: "SWAP",
+        sort: Some(SortKey::Swap),
+        width: Constraint::Length(7),
+    },
+    Column {
+        header: "VRAM",
+        sort: Some(SortKey::Vram),
+        width: Constraint::Length(7),
+    },
+    Column {
+        header: "GTT",
+        sort: Some(SortKey::Gtt),
+        width: Constraint::Length(7),
+    },
+    Column {
+        header: "GFX%",
+        sort: Some(SortKey::Gfx),
+        width: Constraint::Length(5),
+    },
+    Column {
+        header: "COMP%",
+        sort: Some(SortKey::Compute),
+        width: Constraint::Length(6),
+    },
+    Column {
+        header: "DMA%",
+        sort: Some(SortKey::Dma),
+        width: Constraint::Length(5),
+    },
+    Column {
+        header: "CPU%",
+        sort: Some(SortKey::Cpu),
+        width: Constraint::Length(5),
+    },
+];
+
+/// Columns shown on a wide terminal.
+const WIDE: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+/// Medium terminals: drop the per-engine columns, keep CPU%.
+const MEDIUM: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 11];
+/// Narrow terminals keep identity + memory only.
+const NARROW: &[usize] = &[1, 2, 3, 4, 5, 6, 7];
+
+/// Columns that fit the terminal. The active sort column is always kept so the
+/// list never looks sorted by an invisible key.
+fn visible_columns(width: u16, sort: Option<SortKey>) -> Vec<usize> {
+    let mut columns = if width >= 104 {
+        WIDE.to_vec()
+    } else if width >= 88 {
+        MEDIUM.to_vec()
+    } else {
+        NARROW.to_vec()
+    };
+    if let Some(key) = sort
+        && let Some(index) = COLUMNS.iter().position(|column| column.sort == Some(key))
+        && !columns.contains(&index)
+    {
+        columns.push(index);
+        columns.sort_unstable();
+    }
+    columns
+}
+
+pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
+    let columns = visible_columns(area.width, app.proc_sort);
+    let block = process_block(app, area.width);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     if app.is_collapsed(Section::Processes) {
-        let n: usize = app
-            .active_apps()
-            .map(|a| a.stat.fdinfo.proc_usage.len())
-            .sum();
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!(" {n} processes "),
+                format!(" {} processes ", app.proc_rows.len()),
                 Style::default().fg(app.theme.graph_text()),
             ))),
             inner,
@@ -29,60 +125,142 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let header = Row::new(vec![
-        "GPU", "PID", "NAME", "MEM", "VRAM", "GTT", "GFX%", "COMP%", "DMA%", "CPU%",
-    ])
-    .style(
-        Style::default()
-            .fg(app.theme.proc_misc())
-            .add_modifier(Modifier::BOLD),
-    );
+    if app.proc_rows.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " no processes ",
+                Style::default().fg(app.theme.graph_text()),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let header = header_row(app, &columns);
     let rows: Vec<Row> = app
-        .gpus
+        .proc_rows
         .iter()
-        .enumerate()
-        .filter_map(|(gi, gpu)| gpu.app.as_ref().map(|gpu_app| (gi, gpu_app)))
-        .flat_map(|(gi, a)| {
-            a.stat.fdinfo.proc_usage.iter().map(move |pu| {
-                let gpu_activity = [pu.usage.gfx, pu.usage.compute, pu.usage.dma]
-                    .into_iter()
-                    .max()
-                    .unwrap_or(0)
-                    .clamp(0, 100) as f64;
-                Row::new(vec![
-                    gi.to_string(),
-                    pu.pid.to_string(),
-                    pu.name.chars().take(24).collect::<String>(),
-                    fmt_kib(app.process_rss_kb(pu.pid)),
-                    fmt_kib(Some(pu.usage.vram_usage)),
-                    fmt_kib(Some(pu.usage.gtt_usage)),
-                    pu.usage.gfx.to_string(),
-                    pu.usage.compute.to_string(),
-                    pu.usage.dma.to_string(),
-                    pu.usage.cpu.to_string(),
-                ])
-                .style(Style::default().fg(app.theme.process().sample(gpu_activity / 100.0)))
-            })
+        .map(|row| {
+            // GPU clients are tinted by engine activity; CPU-only processes
+            // keep a neutral tint so a big MEM+SWAP row stays readable.
+            let color = if row.has_gpu() {
+                app.theme
+                    .process()
+                    .sample(row.gpu_activity() as f64 / 100.0)
+            } else {
+                app.theme.proc_misc()
+            };
+            let cells = columns
+                .iter()
+                .map(|column| cell_for(row, *column))
+                .collect::<Vec<_>>();
+            Row::new(cells).style(Style::default().fg(color))
         })
         .collect();
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(4),
-            Constraint::Length(7),
-            Constraint::Min(20),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(7),
-            Constraint::Length(6),
-            Constraint::Length(6),
-        ],
-    )
-    .header(header);
-    f.render_widget(table, inner);
+
+    let widths = columns.iter().map(|column| COLUMNS[*column].width);
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(1)
+        .row_highlight_style(
+            Style::default()
+                .bg(app.theme.selected_bg())
+                .fg(app.theme.selected_fg())
+                .add_modifier(Modifier::BOLD),
+        );
+
+    f.render_stateful_widget(table, inner, &mut app.proc_state);
 }
+
+/// Box title carries the current sort column, direction and filter, plus the
+/// key hints — the panel is self-describing instead of relying on the footer.
+fn process_block(app: &App, width: u16) -> Block<'static> {
+    let sort = match app.proc_sort {
+        Some(key) => format!("{}{}", key.label(), SORT_ARROW),
+        None => "none".to_string(),
+    };
+    let scope = if app.proc_all { "all" } else { "gpu" };
+    // Only advertise the keys while the panel is focused; the arrows do
+    // nothing from other sections.
+    let hints = match (app.section == Section::Processes, width >= 110) {
+        (true, true) => " · ←/→ sort · Esc clear · a filter · j/k scroll ",
+        (true, false) => " · ←/→ sort · Esc off ",
+        (false, _) => " · tab to focus ",
+    };
+    let info = format!(
+        " sort {} · {} {}{}",
+        sort,
+        scope,
+        app.proc_rows.len(),
+        hints
+    );
+
+    section_block(app, Section::Processes, "PROCESSES", SectionBox::Proc).title_top(
+        Line::from(Span::styled(
+            info,
+            Style::default().fg(app.theme.proc_misc()),
+        ))
+        .alignment(Alignment::Right),
+    )
+}
+
+fn header_row(app: &App, columns: &[usize]) -> Row<'static> {
+    let base = Style::default()
+        .fg(app.theme.proc_misc())
+        .add_modifier(Modifier::BOLD);
+    // The active column is the cursor: inverted so it reads as a selection.
+    let active = Style::default()
+        .fg(app.theme.selected_fg())
+        .bg(app.theme.selected_bg())
+        .add_modifier(Modifier::BOLD);
+
+    let cells = columns.iter().map(|column| {
+        let spec = &COLUMNS[*column];
+        let is_active = spec.sort.is_some() && spec.sort == app.proc_sort;
+        let label = if is_active {
+            format!("{}{SORT_ARROW}", spec.header)
+        } else {
+            spec.header.to_string()
+        };
+        let style = if is_active { active } else { base };
+        Cell::from(Line::from(label).alignment(Alignment::Right)).style(style)
+    });
+
+    Row::new(cells)
+}
+
+fn cell_for(row: &ProcRow, column: usize) -> Cell<'static> {
+    match column {
+        0 => right(
+            row.gpu_index()
+                .map_or_else(|| "-".into(), |i| i.to_string()),
+        ),
+        1 => right(row.pid.to_string()),
+        2 => Cell::from(row.name.chars().take(24).collect::<String>()),
+        3 => right(fmt_kib(Some(row.total_kb()))),
+        4 => right(fmt_kib(Some(row.mem_kb))),
+        5 => right(fmt_opt_kib(row.swap_kb)),
+        6 => right(
+            row.vram_kb()
+                .map_or_else(|| "-".into(), |kb| fmt_kib(Some(kb))),
+        ),
+        7 => right(
+            row.gtt_kb()
+                .map_or_else(|| "-".into(), |kb| fmt_kib(Some(kb))),
+        ),
+        8 => right(row.gfx().to_string()),
+        9 => right(row.compute().to_string()),
+        10 => right(row.dma().to_string()),
+        _ => right(row.cpu().to_string()),
+    }
+}
+
+fn right(text: String) -> Cell<'static> {
+    Cell::from(Line::from(text).alignment(Alignment::Right))
+}
+
+/// Sorting is always descending (biggest first), so a single arrow is enough.
+const SORT_ARROW: &str = "▼";
 
 fn fmt_kib(kib: Option<u64>) -> String {
     const KIB_PER_MIB: u64 = 1 << 10;
@@ -98,14 +276,29 @@ fn fmt_kib(kib: Option<u64>) -> String {
     }
 }
 
+/// Like `fmt_kib`, but an exact zero renders as `-` (e.g. no swap used).
+fn fmt_opt_kib(kib: u64) -> String {
+    if kib == 0 {
+        "-".to_string()
+    } else {
+        fmt_kib(Some(kib))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::fmt_kib;
+    use super::{fmt_kib, fmt_opt_kib};
 
     #[test]
     fn memory_columns_use_compact_binary_units() {
         assert_eq!(fmt_kib(Some(512 << 10)), "512M");
         assert_eq!(fmt_kib(Some(3 << 20)), "3.0G");
         assert_eq!(fmt_kib(None), "-");
+    }
+
+    #[test]
+    fn zero_optional_columns_render_as_a_dash() {
+        assert_eq!(fmt_opt_kib(0), "-");
+        assert_eq!(fmt_opt_kib(2 << 10), "2M");
     }
 }

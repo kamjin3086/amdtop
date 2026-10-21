@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct CollapseState {
     pub cpu: bool,
     pub gpu: bool,
@@ -20,6 +20,31 @@ pub struct CollapseState {
     /// Persisted gauge block-style index.
     #[serde(default)]
     pub block_style: usize,
+    /// PROCESSES sort column id (`total`, `mem`, `swap`, …); empty = unsorted.
+    #[serde(default)]
+    pub proc_sort: String,
+    /// true = list every process, false = GPU clients only.
+    #[serde(default = "default_true")]
+    pub proc_all: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for CollapseState {
+    fn default() -> Self {
+        Self {
+            cpu: false,
+            gpu: false,
+            npu: false,
+            processes: false,
+            theme: String::new(),
+            block_style: 0,
+            proc_sort: String::new(),
+            proc_all: true,
+        }
+    }
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -106,6 +131,24 @@ mod tests {
         assert!(state.cpu);
         assert_eq!(state.theme, "");
         assert_eq!(state.block_style, 0);
+        assert_eq!(state.proc_sort, "");
+        assert!(state.proc_all);
+    }
+
+    #[test]
+    fn process_sort_preferences_round_trip() {
+        let state = super::CollapseState {
+            proc_sort: "swap".into(),
+            proc_all: false,
+            ..super::CollapseState::default()
+        };
+
+        let json = serde_json::to_string(&state).expect("serialize state");
+        let restored: super::CollapseState =
+            serde_json::from_str(&json).expect("deserialize state");
+
+        assert_eq!(restored.proc_sort, "swap");
+        assert!(!restored.proc_all);
     }
 
     #[test]
@@ -117,6 +160,7 @@ mod tests {
             processes: false,
             theme: "onedark".into(),
             block_style: 2,
+            ..super::CollapseState::default()
         };
 
         let json = serde_json::to_string(&state).expect("serialize state");

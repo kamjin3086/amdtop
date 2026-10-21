@@ -22,7 +22,7 @@ mod gpu;
 mod npu;
 mod processes;
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     if let Some(bg) = app.theme.main_bg() {
         f.render_widget(Block::default().style(Style::default().bg(bg)), area);

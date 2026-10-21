@@ -29,8 +29,9 @@ layout.
 - **Adaptive memory-bandwidth telemetry**: shows memory-controller utilization
   where available alongside SoC DRAM read/write throughput on supported APUs
 - **XDNA NPU**: presence detection on `/sys/class/accel`; utilization + per-context table when the `amdxdna` driver exposes DRM fdinfo telemetry
-- **Process table**: per-process resident system memory (`MEM`), VRAM/GTT,
-  and engine usage
+- **Process table with unified-memory totals**: every process (not just DRM
+  clients), with `MEM` + `SWAP` + `VRAM` + `GTT` rolled into a `TOTAL`
+  column; walk columns with `←`/`→` to sort each one biggest-first
 - **41 native bundled themes**: available without btop or external data files;
   cycle live with `t`/`T`. Defaults to `tokyo-night`.
 - nvitop-style fixed-track gauges with aligned numeric columns; braille area
@@ -119,9 +120,50 @@ system-wide numbering. Use the displayed PCI BDF as the authoritative mapping.
 | `Space` / `Enter` | collapse / expand the focused section |
 | `t` / `T` | next / previous theme |
 | `b` / `B` | next / previous gauge block style |
+| `←` / `→` | (PROCESSES focused) move the sort cursor across columns |
+| `Esc` | (PROCESSES) clear the sort; otherwise quit |
+| `a` | (PROCESSES) show all processes / GPU clients only |
+| `j` `k`, `PgUp` `PgDn`, `Home` `End` | (PROCESSES) scroll the list |
 
-Section collapse state, the selected theme, and the gauge block style all
-persist across runs.
+Section collapse state, the selected theme, the gauge block style, and the
+process-table sort/filter all persist across runs.
+
+### Process table: sorting by real unified-memory use
+
+The panel can list **every process**, not only the ones holding a DRM
+context, because a process that never touches the GPU can still pin several
+gigabytes of unified memory through RSS and swap (containers, language
+servers, build daemons). Kernel threads and zombies, which have no address
+space, are filtered out.
+
+Columns, left to right:
+
+```text
+TOTAL = MEM + SWAP + VRAM + GTT
+```
+
+- `MEM` is resident set size (`VmRSS`).
+- `SWAP` is `VmSwap` — pages that were compressed into zram. They still
+  occupy physical memory, but they disappear from `MEM`, which is why a
+  heavy process can look tiny in a plain `MEM`-only list.
+- `VRAM` / `GTT` come from `drm-resident-*` in `/proc/<pid>/fdinfo`.
+
+Sorting is a **column cursor**, not a mode:
+
+1. `Tab` to the PROCESSES section (the bottom one).
+2. Press `→` once: the cursor lands on `TOTAL` and the list sorts
+   biggest-first. Press `→` again to move to `MEM`, then `SWAP`, and so on
+   to the right.
+3. Press `←` to step back through the columns.
+4. Press `Esc` to drop the sort and return to the PID-ordered view.
+
+The cursor is drawn as an inverted header cell with a `▼` marker, and the
+current state is shown in the panel border (`sort TOTAL▼ · all 321`).
+
+`TOTAL` adds shared pages once per process, so adding the column up across
+rows over-counts memory that several processes map. Use it to rank
+processes, not to compute the system total — the CPU section's MEM/SWP bars
+remain the authoritative system figures.
 
 ## Configuration
 
