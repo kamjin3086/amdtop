@@ -125,8 +125,8 @@ system-wide numbering. Use the displayed PCI BDF as the authoritative mapping.
 | `Space` / `Enter` | collapse / expand the focused section |
 | `t` / `T` | next / previous theme |
 | `b` / `B` | next / previous gauge block style |
-| `←` / `→` | (PROCESSES focused) move the sort cursor across columns |
-| `Esc` | (PROCESSES) clear the sort; otherwise quit |
+| `←` / `→` | move the sort cursor across columns; wraps around, either arrow enters the cycle at TOTAL |
+| `Esc` | unwind one layer: close the detail pane, then clear the sort, then quit |
 | `a` | (PROCESSES) show all processes / GPU clients only |
 | `d` | (PROCESSES) show / hide the detail pane for the selected process |
 | `x` | (PROCESSES) stop the selected process — asks first, sends `SIGTERM` |
@@ -162,7 +162,10 @@ Sorting is a **column cursor**, not a mode:
    biggest-first. Press `→` again to move to `MEM`, then `SWAP`, and so on
    to the right.
 3. Press `←` to step back through the columns.
-4. Press `Esc` to drop the sort and return to the PID-ordered view.
+4. Both arrows wrap around: `→` past `CPU%` returns to `TOTAL`, `←` past
+   `TOTAL` jumps to `CPU%`. From the unsorted view either arrow enters at
+   `TOTAL` (the most useful column).
+5. Press `Esc` to drop the sort and return to the PID-ordered view.
 
 The cursor is drawn as an inverted header cell with a `▼` marker, and the
 current state is shown in the panel border (`sort TOTAL▼ · all 321`).
@@ -175,8 +178,8 @@ remain the authoritative system figures.
 ### Detail pane
 
 Press `d` (the footer lists it while PROCESSES is focused) to open a
-full-width pane directly under the table. It follows the selection, so `j`/`k`
-walks processes while the pane stays in sync:
+full-width pane directly under the table; `d` or `Esc` closes it again. It
+follows the selection, so `j`/`k` walks processes while the pane stays in sync:
 
 ```text
  detail · 3155842 llama-server ─────────────────────────── d close

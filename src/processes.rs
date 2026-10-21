@@ -49,17 +49,14 @@ impl SortKey {
         Self::ALL.iter().position(|key| *key == self).unwrap_or(0)
     }
 
-    /// Column to the right. Clamps on the last column instead of wrapping, so
-    /// holding the key never jumps back to the start.
+    /// Column to the right, wrapping past the last one.
     pub fn next_column(self) -> Self {
-        Self::ALL[(self.index() + 1).min(Self::ALL.len() - 1)]
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
     }
 
-    /// Column to the left; `None` when stepping left of the first column,
-    /// which means "back to the unsorted, PID-ordered view".
-    pub fn prev_column(self) -> Option<Self> {
-        let index = self.index();
-        (index > 0).then(|| Self::ALL[index - 1])
+    /// Column to the left, wrapping past the first one.
+    pub fn prev_column(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 
     /// Short header label (without the direction arrow).
@@ -911,7 +908,7 @@ Threads:\t37
     }
 
     #[test]
-    fn right_arrow_walks_columns_left_to_right_and_clamps_on_the_last_one() {
+    fn right_arrow_cycles_through_every_column_and_wraps_to_total() {
         let mut key = SortKey::Total;
         let mut seen = vec![key];
         for _ in 1..SortKey::ALL.len() {
@@ -920,14 +917,19 @@ Threads:\t37
         }
 
         assert_eq!(seen, SortKey::ALL.to_vec());
-        assert_eq!(SortKey::Cpu.next_column(), SortKey::Cpu);
+        assert_eq!(SortKey::Cpu.next_column(), SortKey::Total);
     }
 
     #[test]
-    fn left_arrow_walks_back_and_clears_before_the_first_column() {
-        assert_eq!(SortKey::Total.prev_column(), None);
-        assert_eq!(SortKey::Mem.prev_column(), Some(SortKey::Total));
-        assert_eq!(SortKey::Cpu.prev_column(), Some(SortKey::Dma));
+    fn left_arrow_cycles_backwards_and_wraps_to_the_last_column() {
+        assert_eq!(SortKey::Total.prev_column(), SortKey::Cpu);
+        assert_eq!(SortKey::Mem.prev_column(), SortKey::Total);
+        assert_eq!(SortKey::Cpu.prev_column(), SortKey::Dma);
+        // stepping left then right returns to where we started
+        for key in SortKey::ALL {
+            assert_eq!(key.prev_column().next_column(), key);
+            assert_eq!(key.next_column().prev_column(), key);
+        }
     }
 
     #[test]

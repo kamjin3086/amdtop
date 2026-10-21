@@ -349,30 +349,43 @@ impl App {
     }
 
     /// Right arrow: move the column cursor right and sort that column
-    /// biggest-first. From "no sort" the cursor lands on TOTAL.
+    /// biggest-first. From "no sort" the cursor enters the cycle at TOTAL and
+    /// wraps around after the last column.
     pub fn proc_sort_right(&mut self) {
-        let next = match self.proc_sort {
-            None => Some(SortKey::Total),
-            Some(key) => Some(key.next_column()),
-        };
-        if next == self.proc_sort {
-            return;
-        }
-        self.proc_sort = next;
+        self.set_proc_sort(match self.proc_sort {
+            None => SortKey::Total,
+            Some(key) => key.next_column(),
+        });
+    }
+
+    /// Left arrow: same ring, walked backwards. From "no sort" it also enters
+    /// at TOTAL, then wraps to the last column.
+    pub fn proc_sort_left(&mut self) {
+        self.set_proc_sort(match self.proc_sort {
+            None => SortKey::Total,
+            Some(key) => key.prev_column(),
+        });
+    }
+
+    fn set_proc_sort(&mut self, key: SortKey) {
+        self.proc_sort = Some(key);
         self.proc_state.select(Some(0));
         self.sort_proc_rows();
         self.persist_proc_prefs();
     }
 
-    /// Left arrow: move the cursor back; left of TOTAL clears the sort.
-    pub fn proc_sort_left(&mut self) {
-        let Some(key) = self.proc_sort else {
-            return;
-        };
-        self.proc_sort = key.prev_column();
-        self.proc_state.select(Some(0));
-        self.sort_proc_rows();
-        self.persist_proc_prefs();
+    /// Esc closes the detail pane when it is open.
+    pub fn close_proc_detail(&mut self) -> bool {
+        self.proc_detail.take().is_some()
+    }
+
+    /// Esc unwinds one layer per press: detail pane, then column sort.
+    /// Returns false when there is nothing left to dismiss (so Esc can quit).
+    pub fn dismiss_top_layer(&mut self) -> bool {
+        if self.close_proc_detail() {
+            return true;
+        }
+        self.cancel_proc_sort()
     }
 
     /// Esc: drop the column sort and return to the PID-ordered view.

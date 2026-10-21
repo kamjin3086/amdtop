@@ -199,10 +199,10 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
                     _ => {}
                 }
             } else if is_quit_key(&key) {
-                // Esc is a two-stage key: it clears the PROCESSES sort first and
-                // only quits when there is nothing left to cancel.
-                if key.code == KeyCode::Esc && app.cancel_proc_sort() {
-                    // sort cleared, keep running
+                // Esc unwinds one layer per press: detail pane, then sort,
+                // and only quits when there is nothing left to dismiss.
+                if key.code == KeyCode::Esc && app.dismiss_top_layer() {
+                    // one layer closed, keep running
                 } else {
                     app.save_state()?;
                     return Ok(());

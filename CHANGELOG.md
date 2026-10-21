@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supervised unit whose restart policy may bring it back.
 - `a` toggles between all processes and GPU clients only; `j`/`k`,
   `PgUp`/`PgDn`, `Home`/`End` scroll the list.
+- `Esc` closes the detail pane when it is open, then clears the sort on the
+  next press, and only then quits: one layer per press.
+- The sort cursor cycles: `→` past the last column returns to `TOTAL`, `←`
+  past the first one jumps to `CPU%`, and either arrow enters the cycle at
+  `TOTAL` from the unsorted view.
 - The process-table sort column and filter persist in `state.json`. The panel
   border shows `Esc clear` while a column sort is active, and the footer lists
   the process shortcuts (including `Esc clear`) whenever PROCESSES is focused.

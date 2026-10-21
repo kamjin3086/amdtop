@@ -140,7 +140,7 @@ pub(super) fn draw(
                 .fg(app.theme.hi_fg())
                 .add_modifier(Modifier::BOLD),
         ))
-        .title_top(Line::from(Span::styled(" d close ", dim)).alignment(Alignment::Right));
+        .title_top(Line::from(Span::styled(" d/Esc close ", dim)).alignment(Alignment::Right));
 
     f.render_widget(Paragraph::new(content).block(block), area);
 }
