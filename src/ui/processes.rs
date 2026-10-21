@@ -16,6 +16,7 @@ struct Column {
     header: &'static str,
     sort: Option<SortKey>,
     width: Constraint,
+    align: Alignment,
 }
 
 const COLUMNS: [Column; 12] = [
@@ -23,61 +24,73 @@ const COLUMNS: [Column; 12] = [
         header: "GPU",
         sort: None,
         width: Constraint::Length(3),
+        align: Alignment::Right,
     },
     Column {
         header: "PID",
         sort: None,
         width: Constraint::Length(7),
+        align: Alignment::Right,
     },
     Column {
         header: "NAME",
         sort: None,
         width: Constraint::Min(14),
+        align: Alignment::Left,
     },
     Column {
         header: "TOTAL",
         sort: Some(SortKey::Total),
         width: Constraint::Length(8),
+        align: Alignment::Right,
     },
     Column {
         header: "MEM",
         sort: Some(SortKey::Mem),
         width: Constraint::Length(7),
+        align: Alignment::Right,
     },
     Column {
         header: "SWAP",
         sort: Some(SortKey::Swap),
         width: Constraint::Length(7),
+        align: Alignment::Right,
     },
     Column {
         header: "VRAM",
         sort: Some(SortKey::Vram),
         width: Constraint::Length(7),
+        align: Alignment::Right,
     },
     Column {
         header: "GTT",
         sort: Some(SortKey::Gtt),
         width: Constraint::Length(7),
+        align: Alignment::Right,
     },
     Column {
         header: "GFX%",
         sort: Some(SortKey::Gfx),
         width: Constraint::Length(5),
+        align: Alignment::Right,
     },
     Column {
         header: "COMP%",
         sort: Some(SortKey::Compute),
         width: Constraint::Length(6),
+        align: Alignment::Right,
     },
     Column {
         header: "DMA%",
         sort: Some(SortKey::Dma),
         width: Constraint::Length(5),
+        align: Alignment::Right,
     },
     Column {
         header: "CPU%",
         sort: Some(SortKey::Cpu),
         width: Constraint::Length(5),
+        align: Alignment::Right,
     },
 ];
 
@@ -152,7 +165,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             };
             let cells = columns
                 .iter()
-                .map(|column| cell_for(row, *column))
+                .map(|column| cell_for(row, *column, app))
                 .collect::<Vec<_>>();
             Row::new(cells).style(Style::default().fg(color))
         })
@@ -182,10 +195,10 @@ fn process_block(app: &App, width: u16) -> Block<'static> {
     let scope = if app.proc_all { "all" } else { "gpu" };
     // Only advertise the keys while the panel is focused; the arrows do
     // nothing from other sections.
-    let hints = match (app.section == Section::Processes, width >= 110) {
-        (true, true) => " · ←/→ sort · Esc clear · a filter · j/k scroll ",
-        (true, false) => " · ←/→ sort · Esc off ",
-        (false, _) => " · tab to focus ",
+    let hints = if width >= 110 {
+        " · ←/→ sort · Esc clear · a filter · j/k scroll "
+    } else {
+        " · ←/→ sort · Esc off "
     };
     let info = format!(
         " sort {} · {} {}{}",
@@ -223,36 +236,49 @@ fn header_row(app: &App, columns: &[usize]) -> Row<'static> {
             spec.header.to_string()
         };
         let style = if is_active { active } else { base };
-        Cell::from(Line::from(label).alignment(Alignment::Right)).style(style)
+        Cell::from(Line::from(label).alignment(spec.align)).style(style)
     });
 
     Row::new(cells)
 }
 
-fn cell_for(row: &ProcRow, column: usize) -> Cell<'static> {
+fn cell_for(row: &ProcRow, column: usize, app: &App) -> Cell<'static> {
+    // Placeholders are dimmed so real numbers stand out.
+    let dim = Style::default().fg(app.theme.inactive_fg());
     match column {
-        0 => right(
-            row.gpu_index()
-                .map_or_else(|| "-".into(), |i| i.to_string()),
-        ),
+        0 => match row.gpu_index() {
+            Some(index) => right(index.to_string()),
+            None => dimmed("-".to_string(), dim),
+        },
         1 => right(row.pid.to_string()),
         2 => Cell::from(row.name.chars().take(24).collect::<String>()),
         3 => right(fmt_kib(Some(row.total_kb()))),
         4 => right(fmt_kib(Some(row.mem_kb))),
-        5 => right(fmt_opt_kib(row.swap_kb)),
-        6 => right(
-            row.vram_kb()
-                .map_or_else(|| "-".into(), |kb| fmt_kib(Some(kb))),
-        ),
-        7 => right(
-            row.gtt_kb()
-                .map_or_else(|| "-".into(), |kb| fmt_kib(Some(kb))),
-        ),
+        5 => {
+            let text = fmt_opt_kib(row.swap_kb);
+            if row.swap_kb == 0 {
+                dimmed(text, dim)
+            } else {
+                right(text)
+            }
+        }
+        6 => match row.vram_kb() {
+            Some(kb) => right(fmt_kib(Some(kb))),
+            None => dimmed("-".to_string(), dim),
+        },
+        7 => match row.gtt_kb() {
+            Some(kb) => right(fmt_kib(Some(kb))),
+            None => dimmed("-".to_string(), dim),
+        },
         8 => right(row.gfx().to_string()),
         9 => right(row.compute().to_string()),
         10 => right(row.dma().to_string()),
         _ => right(row.cpu().to_string()),
     }
+}
+
+fn dimmed(text: String, style: Style) -> Cell<'static> {
+    Cell::from(Line::from(text).alignment(Alignment::Right)).style(style)
 }
 
 fn right(text: String) -> Cell<'static> {

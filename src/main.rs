@@ -18,7 +18,7 @@ mod processes;
 mod theme;
 mod ui;
 
-use app::{App, Section};
+use app::App;
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -205,14 +205,10 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
                     KeyCode::Char('T') => app.cycle_theme(false)?,
                     KeyCode::Char('b') => app.cycle_block(true)?,
                     KeyCode::Char('B') => app.cycle_block(false)?,
-                    // PROCESSES view: left/right walk the sort column cursor,
-                    // `a` toggles all-vs-GPU, j/k scrolls the list.
-                    KeyCode::Right if app.section == Section::Processes => {
-                        app.proc_sort_right();
-                    }
-                    KeyCode::Left if app.section == Section::Processes => {
-                        app.proc_sort_left();
-                    }
+                    // Sorting is always reachable: the PROCESSES table is the
+                    // only sortable view, so there is nothing to disambiguate.
+                    KeyCode::Right | KeyCode::Char('l') => app.proc_sort_right(),
+                    KeyCode::Left | KeyCode::Char('h') => app.proc_sort_left(),
                     KeyCode::Char('a') => app.toggle_proc_filter(),
                     // Row scrolling. Works without focusing the panel first so
                     // the list is usable straight after launch.
