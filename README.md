@@ -8,6 +8,14 @@
 > Everything below the divider is the upstream README, kept verbatim. Only the
 > section above it describes this fork.
 
+![amdtop fork running on a Strix Halo APU: the process table is sorted by TOTAL and shows MEM, SWAP, VRAM and GTT columns, the NPU section is collapsed to two rows, and the footer lists the fork's keys](docs/screenshot-fork.png)
+
+*The process table sorted by `TOTAL` (`MEM + SWAP + VRAM + GTT`) on a Ryzen AI
+MAX+ 395. `llama-server` leads with 5.6G even though its resident memory is only
+197M: the rest is GPU GTT and pages compressed into zram. `hindsight-api` and
+`dnf5daemon-serv` never touch the GPU, yet they are the next largest consumers.
+The footer shows the keys this fork adds.*
+
 ## Why this fork exists
 
 On a Strix Halo (Ryzen AI MAX+) box, `btop`/`top` reported roughly 23 GiB of
