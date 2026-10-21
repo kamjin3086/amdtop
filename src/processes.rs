@@ -124,6 +124,8 @@ impl GpuProc {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcRow {
     pub pid: i32,
+    /// Real UID of the process; used to refuse cross-user signals.
+    pub uid: u32,
     pub name: String,
     /// Resident set size in KiB (`VmRSS`).
     pub mem_kb: u64,
@@ -200,6 +202,7 @@ impl ProcRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcStatus {
     pub name: String,
+    pub uid: u32,
     pub rss_kb: u64,
     pub swap_kb: u64,
     /// False for kernel threads and zombies: they have no `mm`, so `status`
@@ -226,6 +229,13 @@ pub fn parse_status(status: &str) -> ProcStatus {
         let value = value.trim();
         match key {
             "Name" => parsed.name = value.to_string(),
+            "Uid" => {
+                parsed.uid = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0)
+            }
             "VmRSS" => {
                 parsed.has_mm = true;
                 parsed.rss_kb = parse_kb(value).unwrap_or(0);
@@ -262,6 +272,7 @@ pub fn merge_rows(
         }
         rows.push(ProcRow {
             pid,
+            uid: status.uid,
             name: status.name,
             mem_kb: status.rss_kb,
             swap_kb: status.swap_kb,
@@ -343,6 +354,7 @@ mod tests {
     fn status(name: &str, rss_kb: u64, swap_kb: u64) -> ProcStatus {
         ProcStatus {
             name: name.into(),
+            uid: 1000,
             rss_kb,
             swap_kb,
             has_mm: true,
@@ -379,6 +391,7 @@ Threads:\t37
     fn total_kb_adds_resident_swapped_and_gpu_memory() {
         let row = ProcRow {
             pid: 1,
+            uid: 1000,
             name: "x".into(),
             mem_kb: 100,
             swap_kb: 200,
@@ -392,6 +405,7 @@ Threads:\t37
     fn total_kb_is_just_mem_plus_swap_without_a_gpu_context() {
         let row = ProcRow {
             pid: 1,
+            uid: 1000,
             name: "hindsight-api".into(),
             mem_kb: 32_000,
             swap_kb: 1_400_000,

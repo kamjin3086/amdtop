@@ -19,6 +19,7 @@ use crate::theme::SectionBox;
 
 mod cpu;
 mod gpu;
+mod kill;
 mod npu;
 mod processes;
 
@@ -45,6 +46,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     processes::draw(f, chunks[idx], app);
     draw_footer(f, chunks[chunks.len() - 1], app);
+
+    // Modal last so it covers everything. Cloned because `draw` also reads
+    // `&App` while the prompt lives in it.
+    if let Some(target) = app.kill_prompt.clone() {
+        kill::draw(f, area, app, &target);
+    }
 }
 
 fn build_constraints(app: &App) -> Vec<Constraint> {

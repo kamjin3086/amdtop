@@ -14,6 +14,7 @@ mod config;
 mod cpu;
 mod gauge;
 mod history;
+mod kill;
 mod processes;
 mod theme;
 mod ui;
@@ -185,7 +186,19 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            if is_quit_key(&key) {
+            // The confirmation dialog owns the keyboard while it is open.
+            if app.kill_prompt.is_some() {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.save_state()?;
+                    return Ok(());
+                }
+                match key.code {
+                    KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_kill(),
+                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => app.cancel_kill(),
+                    KeyCode::Char('q') => app.cancel_kill(),
+                    _ => {}
+                }
+            } else if is_quit_key(&key) {
                 // Esc is a two-stage key: it clears the PROCESSES sort first and
                 // only quits when there is nothing left to cancel.
                 if key.code == KeyCode::Esc && app.cancel_proc_sort() {
@@ -210,6 +223,8 @@ fn run(terminal: &mut Tui, app: &mut App) -> io::Result<()> {
                     KeyCode::Right | KeyCode::Char('l') => app.proc_sort_right(),
                     KeyCode::Left | KeyCode::Char('h') => app.proc_sort_left(),
                     KeyCode::Char('a') => app.toggle_proc_filter(),
+                    // Graceful stop: opens a confirmation dialog first.
+                    KeyCode::Char('x') => app.request_kill(),
                     // Row scrolling. Works without focusing the panel first so
                     // the list is usable straight after launch.
                     KeyCode::Char('j') | KeyCode::Down => app.proc_scroll(1),

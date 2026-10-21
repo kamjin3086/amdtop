@@ -5,7 +5,7 @@ use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libamdgpu_top::app::{AppAmdgpuTop, AppOption};
 use libamdgpu_top::{DevicePath, stat};
@@ -14,10 +14,13 @@ use ratatui::widgets::TableState;
 use crate::config::CollapseState;
 use crate::cpu::{CpuSampler, SystemMem, cpu_model};
 use crate::history::History;
+use crate::kill::{self, KillTarget};
 use crate::processes::{self, GpuProc, ProcRow, SortKey};
 use crate::theme::{DEFAULT_THEME, Theme};
 
 const HISTORY_CAPACITY: usize = 80;
+/// How long a one-line action result stays in the panel title.
+const NOTICE_TTL: Duration = Duration::from_secs(4);
 const PROCESS_INDEX_REFRESH_SECS: u64 = 5;
 
 #[derive(PartialEq, Eq, Copy, Clone)]
@@ -76,6 +79,10 @@ pub struct App {
     pub proc_all: bool,
     /// Selected row + scroll offset for the PROCESSES table.
     pub proc_state: TableState,
+    /// Non-empty while the "stop process?" confirmation is on screen.
+    pub kill_prompt: Option<KillTarget>,
+    /// Transient result of the last action (SIGTERM sent, refusal, …).
+    notice: Option<(String, Instant)>,
     pub collapse: CollapseState,
     pub section: Section,
     pub hist_cpu: History,
@@ -134,6 +141,8 @@ impl App {
             proc_sort,
             proc_all,
             proc_state: TableState::default(),
+            kill_prompt: None,
+            notice: None,
             collapse,
             section: Section::Gpu,
             hist_cpu: History::new(HISTORY_CAPACITY),
@@ -401,6 +410,65 @@ impl App {
         }
         let index = if last { self.proc_rows.len() - 1 } else { 0 };
         self.proc_state.select(Some(index));
+    }
+
+    /// Row currently under the cursor.
+    pub fn selected_proc(&self) -> Option<&ProcRow> {
+        self.proc_state
+            .selected()
+            .and_then(|index| self.proc_rows.get(index))
+    }
+
+    /// `x`: open the confirmation dialog for the selected process.
+    pub fn request_kill(&mut self) {
+        let Some(row) = self.selected_proc() else {
+            self.set_notice("no process selected".to_string());
+            return;
+        };
+        let target = KillTarget {
+            pid: row.pid,
+            name: row.name.clone(),
+            total_kb: row.total_kb(),
+            mem_kb: row.mem_kb,
+            swap_kb: row.swap_kb,
+        };
+        match kill::check_target(row.pid, row.uid, kill::effective_uid(), kill::self_pid()) {
+            Ok(()) => self.kill_prompt = Some(target),
+            Err(refusal) => self.set_notice(format!("{refusal}: {}", target.name)),
+        }
+    }
+
+    /// `y` / Enter in the dialog: send SIGTERM (never SIGKILL).
+    pub fn confirm_kill(&mut self) {
+        let Some(target) = self.kill_prompt.take() else {
+            return;
+        };
+        let message = match kill::send_sigterm(target.pid) {
+            Ok(()) => format!("SIGTERM sent to {} ({})", target.name, target.pid),
+            Err(error) => format!(
+                "{}: {} ({})",
+                kill::describe_error(&error),
+                target.name,
+                target.pid
+            ),
+        };
+        self.set_notice(message);
+    }
+
+    /// `n` / Esc / q in the dialog.
+    pub fn cancel_kill(&mut self) {
+        self.kill_prompt = None;
+    }
+
+    fn set_notice(&mut self, message: String) {
+        self.notice = Some((message, Instant::now()));
+    }
+
+    /// Fresh status message for the panel title, if it has not expired yet.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice
+            .as_ref()
+            .and_then(|(message, at)| (at.elapsed() < NOTICE_TTL).then_some(message.as_str()))
     }
 
     pub fn save_state(&self) -> std::io::Result<()> {

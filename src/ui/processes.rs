@@ -192,6 +192,17 @@ fn process_block(app: &App, width: u16) -> Block<'static> {
         Some(key) => format!("{}{}", key.label(), SORT_ARROW),
         None => "none".to_string(),
     };
+    if let Some(notice) = app.notice() {
+        return section_block(app, Section::Processes, "PROCESSES", SectionBox::Proc).title_top(
+            Line::from(Span::styled(
+                format!(" {notice} "),
+                Style::default()
+                    .fg(app.theme.hi_fg())
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Right),
+        );
+    }
     let scope = if app.proc_all { "all" } else { "gpu" };
     // Only advertise the keys while the panel is focused; the arrows do
     // nothing from other sections.
@@ -288,7 +299,7 @@ fn right(text: String) -> Cell<'static> {
 /// Sorting is always descending (biggest first), so a single arrow is enough.
 const SORT_ARROW: &str = "▼";
 
-fn fmt_kib(kib: Option<u64>) -> String {
+pub(super) fn fmt_kib(kib: Option<u64>) -> String {
     const KIB_PER_MIB: u64 = 1 << 10;
     const KIB_PER_GIB: u64 = 1 << 20;
 

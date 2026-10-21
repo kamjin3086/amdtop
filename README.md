@@ -123,6 +123,7 @@ system-wide numbering. Use the displayed PCI BDF as the authoritative mapping.
 | `←` / `→` | (PROCESSES focused) move the sort cursor across columns |
 | `Esc` | (PROCESSES) clear the sort; otherwise quit |
 | `a` | (PROCESSES) show all processes / GPU clients only |
+| `x` | (PROCESSES) stop the selected process — asks first, sends `SIGTERM` |
 | `j` `k`, `PgUp` `PgDn`, `Home` `End` | (PROCESSES) scroll the list |
 
 Section collapse state, the selected theme, the gauge block style, and the
@@ -164,6 +165,23 @@ current state is shown in the panel border (`sort TOTAL▼ · all 321`).
 rows over-counts memory that several processes map. Use it to rank
 processes, not to compute the system total — the CPU section's MEM/SWP bars
 remain the authoritative system figures.
+
+### Stopping a process (graceful only)
+
+Press `x` on the selected row to open a confirmation dialog. `y` or `Enter`
+sends **SIGTERM**; `n` or `Esc` cancels.
+
+- Only `SIGTERM` is ever sent: the process is asked to exit and can flush
+  state, finish writes, and shut down its children. There is deliberately no
+  force-kill key.
+- The dialog names the process, its PID, and its `TOTAL` / `MEM` / `SWAP`
+  footprint, so a mis-selected row is caught before anything happens.
+- Targets that cannot be signalled safely are refused with a one-line notice:
+  init (PID 1), amdtop itself, and other users' processes (unless running as
+  root).
+- The result is reported in the panel border (`SIGTERM sent to …`,
+  `permission denied`, `process already exited`) for a few seconds, and the
+  row disappears on the next sample.
 
 ## Configuration
 
