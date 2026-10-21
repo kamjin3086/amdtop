@@ -174,11 +174,14 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
 
     let widths = columns.iter().map(|column| COLUMNS[*column].width);
     // Detail pane sits directly under the table, full width, only while open.
-    let detail_height = if app.proc_detail.is_some() {
-        detail::HEIGHT.min(inner.height.saturating_sub(3))
-    } else {
-        0
-    };
+    // Its height follows the content so a wrapped command line fits.
+    let detail_lines = app
+        .proc_detail
+        .as_ref()
+        .map(|detail| detail::lines(app, detail, inner.width));
+    let detail_height = detail_lines.as_ref().map_or(0, |lines| {
+        ((lines.len() + 1) as u16).min(inner.height.saturating_sub(3))
+    });
     let parts =
         Layout::vertical([Constraint::Min(3), Constraint::Length(detail_height)]).split(inner);
     let table_area = parts[0];
@@ -196,9 +199,10 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_stateful_widget(table, table_area, &mut app.proc_state);
 
     if detail_height > 0
+        && let Some(lines) = detail_lines
         && let Some(detail) = app.proc_detail.as_ref()
     {
-        detail::draw(f, parts[1], app, detail);
+        detail::draw(f, parts[1], app, detail, lines);
     }
 }
 
@@ -223,10 +227,12 @@ fn process_block(app: &App, width: u16) -> Block<'static> {
     let scope = if app.proc_all { "all" } else { "gpu" };
     // Only advertise the keys while the panel is focused; the arrows do
     // nothing from other sections.
-    let hints = if width >= 110 {
-        " · ←/→ sort · Esc clear · a filter · j/k scroll "
+    // Keep the border short: the footer carries the key hints while this
+    // section is focused, and long titles get clipped by the border corners.
+    let hints = if app.section == Section::Processes || width < 96 {
+        ""
     } else {
-        " · ←/→ sort · Esc off "
+        " · tab to focus "
     };
     let info = format!(
         " sort {} · {} {}{}",

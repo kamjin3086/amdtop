@@ -169,19 +169,25 @@ remain the authoritative system figures.
 
 ### Detail pane
 
-Press `d` to open a full-width pane directly under the table. It follows the
-selection, so `j`/`k` walks processes while the pane stays in sync:
+Press `d` (the footer lists it while PROCESSES is focused) to open a
+full-width pane directly under the table. It follows the selection, so `j`/`k`
+walks processes while the pane stays in sync:
 
 ```text
- state S   uid 1000   threads 7   ppid 1 (systemd)   age 3h07m   fds 120
- exe  /usr/bin/python3
- cwd  /home/kamjin/projects
- cmd  python3 -m http.server 8000
- mem  RSS 909M   PSS 908M   HWM 909M   SWAP 0   VmSize 1.2G
- gpu  GTT 4.6G   VRAM 28M   GFX 0%   COMP 0%   DMA 0%   CPU 0%
- unit lemond.service   stop with: systemctl --user stop lemond
- io   read 1.2M   write 4K
+ detail · 3155842 llama-server ─────────────────────────── d close
+ info uid 1000 · state sleeping · threads 38 · ppid 1587 (lemond) · up 5d5h · fds 7
+ exe  /opt/local/.../vulkan/bin/llama-server
+ cwd  /home/kamjin
+ cmd  /opt/local/.../llama-server -m .../LFM2.5-2.6B-heretic-Q8_0.gguf --ctx-size 6144
+ mem  RSS 197M · PSS 192M · HWM 724M · SWAP 843M · VmSize 8.2G
+ unit lemond.service  →  systemctl --user stop lemond
+ io   read 0K · write 4K
 ```
+
+GPU numbers are deliberately not repeated here: the selected row right above
+already shows VRAM/GTT and the engine percentages. Values use one aligned
+gutter and `·` separators so a line can be scanned without counting spaces;
+long command lines get a second, indented row.
 
 The `unit` line is the answer to "how do I really stop this?" — amdtop shows
 the owning systemd unit or container scope and the command that manages it,

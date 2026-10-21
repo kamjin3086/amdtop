@@ -185,7 +185,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         .add_modifier(Modifier::BOLD)
         .bg(bg);
     let lbl = Style::default().fg(app.theme.main_fg()).bg(bg);
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(" q/ctrl-c ", key),
         Span::styled("quit  ", lbl),
         Span::styled("tab ", key),
@@ -211,6 +211,20 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 .bg(bg),
         ),
     ];
+    // Process-table actions are contextual: only advertise them while the
+    // PROCESSES section is focused, otherwise they do nothing useful.
+    if app.section == Section::Processes {
+        spans.extend([
+            Span::styled(" d ", key),
+            Span::styled("detail  ", lbl),
+            Span::styled(" x ", key),
+            Span::styled("stop  ", lbl),
+            Span::styled("←/→ ", key),
+            Span::styled("sort  ", lbl),
+            Span::styled("a ", key),
+            Span::styled("all/gpu", lbl),
+        ]);
+    }
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
         area,

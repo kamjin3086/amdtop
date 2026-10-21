@@ -432,7 +432,7 @@ impl App {
             return;
         }
         if let Some(row) = self.selected_proc() {
-            self.proc_detail = processes::collect_detail(row.pid, row.gpu.clone());
+            self.proc_detail = processes::collect_detail(row.pid);
         }
     }
 
@@ -445,8 +445,7 @@ impl App {
             self.proc_detail = None;
             return;
         };
-        let (pid, gpu) = (row.pid, row.gpu.clone());
-        self.proc_detail = processes::collect_detail(pid, gpu);
+        self.proc_detail = processes::collect_detail(row.pid);
     }
 
     /// `x`: open the confirmation dialog for the selected process.

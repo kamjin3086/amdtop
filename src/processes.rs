@@ -329,7 +329,6 @@ pub struct ProcDetail {
     pub hwm_kb: u64,
     pub swap_kb: u64,
     pub pss_kb: Option<u64>,
-    pub gpu: Option<GpuProc>,
     /// systemd unit or container scope, plus the command that manages it.
     pub unit: String,
     pub unit_hint: Option<String>,
@@ -515,16 +514,11 @@ pub fn cgroup_info(pid: i32) -> UnitInfo {
 }
 
 /// Collect the detail pane for one process.
-pub fn collect_detail(pid: i32, gpu: Option<GpuProc>) -> Option<ProcDetail> {
-    collect_detail_at(Path::new("/proc"), pid, gpu, now_secs())
+pub fn collect_detail(pid: i32) -> Option<ProcDetail> {
+    collect_detail_at(Path::new("/proc"), pid, now_secs())
 }
 
-pub fn collect_detail_at(
-    root: &Path,
-    pid: i32,
-    gpu: Option<GpuProc>,
-    now: u64,
-) -> Option<ProcDetail> {
+pub fn collect_detail_at(root: &Path, pid: i32, now: u64) -> Option<ProcDetail> {
     let dir = root.join(pid.to_string());
     let status = fs::read_to_string(dir.join("status")).ok()?;
     let status = parse_detail_status(&status);
@@ -585,7 +579,6 @@ pub fn collect_detail_at(
         pss_kb: fs::read_to_string(dir.join("smaps_rollup"))
             .ok()
             .and_then(|text| parse_pss(&text)),
-        gpu,
         unit: unit.unit,
         unit_hint: unit.hint,
         io: fs::read_to_string(dir.join("io"))
@@ -1059,7 +1052,7 @@ Threads:\t37
         symlink("/usr/bin/python3", pid_dir.join("exe")).unwrap();
         symlink("/home/kamjin", pid_dir.join("cwd")).unwrap();
 
-        let detail = collect_detail_at(&root, 123, None, 2_000).expect("collect detail");
+        let detail = collect_detail_at(&root, 123, 2_000).expect("collect detail");
         let hz = clock_ticks_per_second();
         let expected_age = 2_000 - (1_000 + 5_000 / hz);
 
@@ -1100,7 +1093,7 @@ Threads:\t37
         )
         .unwrap();
 
-        let detail = collect_detail_at(&root, 42, None, 2_000).expect("collect detail");
+        let detail = collect_detail_at(&root, 42, 2_000).expect("collect detail");
 
         assert_eq!(detail.cmd, "[kworker/R-sync_wq]");
         assert_eq!(detail.age_secs, None);

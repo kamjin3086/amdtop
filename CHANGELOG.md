@@ -21,9 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sort. The active column is drawn as an inverted header cell and the state is
   shown in the panel border.
 - `d` opens a detail pane under the table for the selected process: command
-  line, executable, cwd, state/threads/ppid/age/fds, RSS/PSS/HWM/VmSize,
-  GPU usage, io counters, and the owning systemd unit or container scope with
-  the command that manages it.
+  line (wrapping to a second row), executable, cwd, state/threads/ppid/up/fds,
+  RSS/PSS/HWM/SWAP/VmSize, io counters, and the owning systemd unit or
+  container scope with the command that manages it. GPU numbers stay in the
+  table row instead of being repeated. Shortcuts for the panel are now listed
+  in the footer while it is focused.
 - `x` stops the selected process: a small confirmation dialog names the
   process and its memory footprint, and only `SIGTERM` is sent so the process
   can shut down gracefully. Init, amdtop itself, and other users' processes
