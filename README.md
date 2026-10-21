@@ -1,8 +1,9 @@
 # amdtop — unified-memory fork
 
 > A personal fork of [lhl/amdtop](https://github.com/lhl/amdtop), based on
-> v0.2.6 (`0f66724`) and kept on the `feat/process-sort` branch.
-> **Not intended for upstream submission.**
+> v0.2.6 (`0f66724`). Published at
+> [kamjin3086/amdtop](https://github.com/kamjin3086/amdtop), default branch
+> `feat/process-sort`. **Not intended for upstream submission.**
 >
 > Everything below the divider is the upstream README, kept verbatim. Only the
 > section above it describes this fork.
@@ -54,11 +55,13 @@ Do **not** use `cargo install amdtop` — that installs the upstream release
 without any of the above.
 
 ```sh
-# From a checkout of this fork (branch feat/process-sort):
-cargo install --path . --force
+# Straight from GitHub (feat/process-sort is the fork's default branch):
+cargo install --git https://github.com/kamjin3086/amdtop --force
 
-# Or straight from a pushed copy of the fork:
-cargo install --git <your-fork-url> --branch feat/process-sort --force
+# Or from a local checkout:
+git clone https://github.com/kamjin3086/amdtop.git
+cd amdtop
+cargo install --path . --force
 ```
 
 Build prerequisites are the same as upstream: Rust 1.88 or newer and the
