@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `install.sh` installs the fork and links it into `/usr/local/bin`, so
+  `sudo amdtop` works. `sudo` resets `PATH` to the sudoers `secure_path`,
+  which excludes `~/.cargo/bin`, so a per-user `cargo install` alone makes the
+  root invocation fail with "command not found". `--system` and
+  `--no-symlink` modes cover the other install layouts.
 - The GPU box reports GPU memory that cannot be attributed to a readable
   process: when the kernel's device counter exceeds the per-process fdinfo sum
   by more than 512 MiB it shows e.g. `74.5G unattributed (root/container

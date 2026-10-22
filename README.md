@@ -63,13 +63,48 @@ Do **not** use `cargo install amdtop` — that installs the upstream release
 without any of the above.
 
 ```sh
-# Straight from GitHub (feat/process-sort is the fork's default branch):
-cargo install --git https://github.com/kamjin3086/amdtop --force
-
-# Or from a local checkout:
 git clone https://github.com/kamjin3086/amdtop.git
 cd amdtop
+./install.sh
+```
+
+`install.sh` builds the fork, installs it into `~/.cargo/bin`, and links it
+into `/usr/local/bin` so that **both** of these work out of the box:
+
+```sh
+amdtop          # as your user
+sudo amdtop     # to attribute root/container GPU memory
+```
+
+The link is the point: `sudo` replaces `PATH` with the sudoers `secure_path`
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:…`), which does not
+contain `~/.cargo/bin`. Without a copy or link inside that path, `sudo amdtop`
+fails with `command not found` even though `amdtop` itself works.
+
+| Command | Result |
+|---|---|
+| `./install.sh` | `~/.cargo/bin/amdtop` + symlink in `/usr/local/bin` (recommended) |
+| `./install.sh --system` | installs only into `/usr/local/bin` |
+| `./install.sh --no-symlink` | keeps `~/.cargo/bin` only; run as root with `sudo ~/.cargo/bin/amdtop` |
+| `sudo rm /usr/local/bin/amdtop` | undoes the link |
+
+Already installed and `sudo amdtop` says `command not found`? You only missed
+the link:
+
+```sh
+sudo ln -sf "$HOME/.cargo/bin/amdtop" /usr/local/bin/amdtop
+```
+
+Manual equivalents, if you prefer not to run a script:
+
+```sh
+# per-user plus the system-wide link
 cargo install --path . --force
+sudo ln -sf "$HOME/.cargo/bin/amdtop" /usr/local/bin/amdtop
+
+# or system-wide
+cargo build --release
+sudo install -Dm755 target/release/amdtop /usr/local/bin/amdtop
 ```
 
 Build prerequisites are the same as upstream: Rust 1.88 or newer and the
@@ -77,8 +112,9 @@ Build prerequisites are the same as upstream: Rust 1.88 or newer and the
 Debian/Ubuntu, `libdrm` on Arch), plus an AMD GPU/APU running the `amdgpu`
 kernel driver.
 
-`cargo install --path .` replaces the `amdtop` binary in `~/.cargo/bin`. To go
-back to the stock release later, run `cargo install amdtop --force`.
+Installing replaces the `amdtop` binary in `~/.cargo/bin`. To go back to the
+stock release later, run `cargo install amdtop --force` (and
+`sudo rm /usr/local/bin/amdtop` to drop the link).
 
 ## Notes and limitations
 
