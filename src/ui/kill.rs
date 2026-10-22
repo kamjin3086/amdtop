@@ -68,12 +68,16 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App, target: &KillTarget) {
             dim,
         )),
     ];
+    // Running as root turns this dialog into a system-wide stop button.
+    if crate::kill::effective_uid() == 0 {
+        lines.push(Line::from(Span::styled(
+            "running as root: can signal any service",
+            Style::default().fg(app.theme.temp().sample(1.0)),
+        )));
+    }
     if let Some(unit) = &target.unit {
         lines.push(Line::from(Span::styled(
-            format!(
-                "managed by {}: a restart policy may restart it",
-                shorten_unit(unit)
-            ),
+            format!("supervised by {}: may be restarted", shorten_unit(unit)),
             dim,
         )));
     }
