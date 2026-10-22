@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `CPU%` now measures the process itself, for every row. It used to be a
+  pass-through of `libamdgpu_top`'s fdinfo value, which only exists for DRM
+  clients, so all other processes were printed as `0` — including the ones
+  burning 1500% on 32 threads, and sorting by the column could only reorder the
+  handful of GPU clients. The panel now reads `/proc/<pid>/stat` for every pid
+  and divides the `utime + stime` delta by the measured sampling interval, so
+  the number is percent of one core summed over all threads, like `top`/`htop`.
+  A process without a second sample yet (just started, pid reused, or the
+  previous round was missed) shows `-` instead of a fake `0`, and sorting puts
+  those rows below measured ones.
 - The process table now gets roughly twice the rows on a 50-line terminal: CPU
   frequency/temp/power/load moved into the CPU box title, MEM and SWP share a
   row, the core grid grows columns on wide terminals (32 cores: 4 rows, was 8),

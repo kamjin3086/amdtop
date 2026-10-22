@@ -15,7 +15,7 @@ use crate::config::CollapseState;
 use crate::cpu::{CpuSampler, SystemMem, cpu_model};
 use crate::history::History;
 use crate::kill::{self, KillTarget};
-use crate::processes::{self, GpuProc, ProcDetail, ProcRow, SortKey};
+use crate::processes::{self, GpuProc, ProcDetail, ProcRow, ProcessCpuSampler, SortKey};
 use crate::theme::{DEFAULT_THEME, Theme};
 
 const HISTORY_CAPACITY: usize = 80;
@@ -72,6 +72,10 @@ pub struct App {
     pub mem: SystemMem,
     /// Rows behind the PROCESSES panel; every process, GPU client or not.
     pub proc_rows: Vec<ProcRow>,
+    /// Baselines for the per-process CPU column, one entry per live pid.
+    pub proc_cpu: ProcessCpuSampler,
+    /// Every process of the last `/proc` sample, before the `a` filter.
+    proc_snapshot: Vec<ProcRow>,
     /// `None` = unsorted (PID order). Sorting is always descending; the
     /// left/right arrows walk the columns.
     pub proc_sort: Option<SortKey>,
@@ -140,6 +144,8 @@ impl App {
             cpu: CpuSampler::default(),
             mem: SystemMem::default(),
             proc_rows: Vec::new(),
+            proc_cpu: ProcessCpuSampler::default(),
+            proc_snapshot: Vec::new(),
             proc_sort,
             proc_all,
             proc_state: TableState::default(),
@@ -251,7 +257,7 @@ impl App {
         send_process_targets_after_activation(&self.process_index_sender, device_activated, || {
             process_device_paths(&self.gpus)
         });
-        self.sample_processes();
+        self.sample_processes(interval);
         self.cpu.tick();
         self.mem.tick();
 
@@ -291,7 +297,7 @@ impl App {
         self.hist_npu.push(npu_sum.clamp(0, 100) as u64);
     }
 
-    fn sample_processes(&mut self) {
+    fn sample_processes(&mut self, interval: Duration) {
         let mut gpu_map: HashMap<i32, GpuProc> = HashMap::new();
         for (gpu_index, gpu) in self.gpus.iter().enumerate() {
             let Some(app) = gpu.app.as_ref() else {
@@ -305,7 +311,6 @@ impl App {
                     gfx: usage.usage.gfx,
                     compute: usage.usage.compute,
                     dma: usage.usage.dma,
-                    cpu: usage.usage.cpu,
                 };
                 gpu_map
                     .entry(usage.pid)
@@ -314,7 +319,16 @@ impl App {
             }
         }
 
-        self.proc_rows = processes::collect(&gpu_map, !self.proc_all);
+        let rows = processes::collect(&mut self.proc_cpu, &gpu_map, interval);
+        self.proc_snapshot = rows;
+        self.rebuild_proc_view();
+    }
+
+    /// Derive the visible table from the last `/proc` snapshot. The filter is a
+    /// pure view on top of it, so `a` does not need a second read of `/proc`
+    /// whose CPU delta would cover a fraction of the sampling interval.
+    fn rebuild_proc_view(&mut self) {
+        self.proc_rows = processes::filter_rows(&self.proc_snapshot, !self.proc_all);
         self.sort_proc_rows();
         self.clamp_proc_selection();
         self.sync_proc_detail();
@@ -405,7 +419,7 @@ impl App {
     pub fn toggle_proc_filter(&mut self) {
         self.proc_all = !self.proc_all;
         self.proc_state.select(Some(0));
-        self.sample_processes();
+        self.rebuild_proc_view();
         self.persist_proc_prefs();
     }
 

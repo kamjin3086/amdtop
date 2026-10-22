@@ -12,9 +12,11 @@
 //! compressed into zram is still visible instead of silently dropping to a
 //! few megabytes.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 /// Sortable column, in the left-to-right order the cursor walks them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -103,7 +105,6 @@ pub struct GpuProc {
     pub gfx: i64,
     pub compute: i64,
     pub dma: i64,
-    pub cpu: i64,
 }
 
 impl GpuProc {
@@ -113,12 +114,69 @@ impl GpuProc {
         self.gfx = self.gfx.max(other.gfx);
         self.compute = self.compute.max(other.compute);
         self.dma = self.dma.max(other.dma);
-        self.cpu = self.cpu.max(other.cpu);
+    }
+}
+
+/// `/proc/<pid>/stat` CPU counters, the raw material for a per-interval share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CpuTicks {
+    /// `utime + stime`, i.e. the CPU time of every thread in clock ticks.
+    pub ticks: u64,
+    /// Field 22 of `stat`; a reused pid starts a new process lifetime.
+    pub start_ticks: u64,
+}
+
+/// Turns the absolute CPU counters in `/proc/<pid>/stat` into "how much CPU did
+/// this process use during the last sampling interval".
+///
+/// Upstream amdtop only knows the CPU time that `libamdgpu_top` derives while it
+/// walks the DRM fdinfo of GPU clients, so every other process had no CPU number
+/// at all. Reading the counters for every pid keeps the column honest and
+/// independent of holding a GPU context.
+#[derive(Debug, Default)]
+pub struct ProcessCpuSampler {
+    previous: HashMap<i32, CpuTicks>,
+}
+
+impl ProcessCpuSampler {
+    /// Compare this round's counters with the previous round.
+    ///
+    /// A process without a usable baseline is reported as absent instead of `0`:
+    /// a first sample cannot tell "idle" from "not measured yet", and printing
+    /// `0` for both is the misleading behaviour this replaces. The same applies
+    /// to a pid that was reused or that disappeared for a round, so a sampling
+    /// gap never turns into a bogus spike.
+    pub fn sample(
+        &mut self,
+        current: HashMap<i32, CpuTicks>,
+        interval: Duration,
+        hz: u64,
+    ) -> HashMap<i32, f32> {
+        let mut usage = HashMap::with_capacity(current.len());
+
+        // `interval` is the elapsed wall time between the two reads; a zero one
+        // would divide the share into infinity.
+        if !interval.is_zero() && hz > 0 {
+            for (&pid, ticks) in &current {
+                let Some(previous) = self.previous.get(&pid) else {
+                    continue;
+                };
+                if previous.start_ticks != ticks.start_ticks {
+                    continue;
+                }
+                let delta = ticks.ticks.saturating_sub(previous.ticks);
+                let seconds = delta as f32 / hz as f32;
+                usage.insert(pid, seconds * 100.0 / interval.as_secs_f32());
+            }
+        }
+
+        self.previous = current;
+        usage
     }
 }
 
 /// One row of the PROCESSES table.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcRow {
     pub pid: i32,
     /// Real UID of the process; used to refuse cross-user signals.
@@ -128,6 +186,10 @@ pub struct ProcRow {
     pub mem_kb: u64,
     /// Swapped-out pages in KiB (`VmSwap`); they live compressed in zram.
     pub swap_kb: u64,
+    /// CPU used during the last sampling interval, in percent of one core.
+    /// Sums every thread, so a busy process can exceed 100. `None` until the
+    /// process has been sampled twice.
+    pub cpu_percent: Option<f32>,
     /// `None` for processes that do not hold GPU memory.
     pub gpu: Option<GpuProc>,
 }
@@ -171,8 +233,8 @@ impl ProcRow {
         self.gpu.as_ref().map_or(0, |g| g.dma)
     }
 
-    pub fn cpu(&self) -> i64 {
-        self.gpu.as_ref().map_or(0, |g| g.cpu)
+    pub fn cpu(&self) -> Option<f32> {
+        self.cpu_percent
     }
 
     /// Highest GPU engine utilization in percent, used for row tinting.
@@ -190,7 +252,9 @@ impl ProcRow {
             SortKey::Gfx => self.gfx().max(0) as u64,
             SortKey::Compute => self.compute().max(0) as u64,
             SortKey::Dma => self.dma().max(0) as u64,
-            SortKey::Cpu => self.cpu().max(0) as u64,
+            // `sort_rows` orders CPU by `Option` so unsampled rows sink; this
+            // arm only exists to keep the match exhaustive.
+            SortKey::Cpu => 0,
         }
     }
 }
@@ -246,12 +310,12 @@ pub fn parse_status(status: &str) -> ProcStatus {
 
 /// Merge procfs rows with the GPU snapshot.
 ///
-/// `gpu_only` keeps the upstream behaviour (DRM clients only); otherwise every
-/// live process is kept so memory hogs without a GPU context remain visible.
+/// Every live process is kept so memory hogs without a GPU context remain
+/// visible; the `a` filter is a separate view on top of this (`filter_rows`).
 pub fn merge_rows(
     statuses: Vec<(i32, ProcStatus)>,
+    cpu: &HashMap<i32, f32>,
     gpu: &HashMap<i32, GpuProc>,
-    gpu_only: bool,
 ) -> Vec<ProcRow> {
     let mut rows = Vec::with_capacity(statuses.len());
     let mut seen = HashSet::with_capacity(statuses.len());
@@ -259,9 +323,6 @@ pub fn merge_rows(
     for (pid, status) in statuses {
         seen.insert(pid);
         let gpu = gpu.get(&pid).cloned();
-        if gpu_only && gpu.is_none() {
-            continue;
-        }
         // Kernel threads / zombies have no address space: they cannot own
         // memory, so listing them is pure noise in a memory panel.
         if !status.has_mm && gpu.is_none() {
@@ -273,6 +334,7 @@ pub fn merge_rows(
             name: status.name,
             mem_kb: status.rss_kb,
             swap_kb: status.swap_kb,
+            cpu_percent: cpu.get(&pid).copied(),
             gpu,
         });
     }
@@ -293,9 +355,33 @@ pub fn merge_rows(
     rows
 }
 
+/// The `a` key: keep every process, or DRM clients only.
+pub fn filter_rows(rows: &[ProcRow], gpu_only: bool) -> Vec<ProcRow> {
+    if gpu_only {
+        rows.iter().filter(|row| row.has_gpu()).cloned().collect()
+    } else {
+        rows.to_vec()
+    }
+}
+
 /// Sort rows in place. Largest value first; ties fall back to ascending PID so
 /// the list does not jitter when several processes report the same value.
 pub fn sort_rows(rows: &mut [ProcRow], key: SortKey) {
+    if key == SortKey::Cpu {
+        // CPU is the one column with a "not measured yet" state, which has to
+        // sink below a real 0% instead of sorting into the middle of the list.
+        rows.sort_by(|a, b| {
+            let order = match (a.cpu_percent, b.cpu_percent) {
+                (Some(a), Some(b)) => b.total_cmp(&a),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            };
+            order.then_with(|| a.pid.cmp(&b.pid))
+        });
+        return;
+    }
+
     rows.sort_by(|a, b| {
         b.numeric_sort_value(key)
             .cmp(&a.numeric_sort_value(key))
@@ -337,14 +423,28 @@ pub struct ProcDetail {
 
 /// Parsed `/proc/<pid>/stat` fields the detail pane needs.
 pub fn parse_stat_fields(stat: &str) -> Option<(char, i32, u32, u64)> {
-    // `comm` may contain spaces and parentheses, so split after the last ')'.
-    let close = stat.rfind(')')?;
-    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
-    let state = fields.first()?.chars().next()?;
-    let ppid = fields.get(1)?.parse().ok()?;
-    let threads = fields.get(17)?.parse().ok()?;
-    let start_ticks = fields.get(19)?.parse().ok()?;
+    let fields = stat_fields(stat)?;
+    let state = fields.get(STAT_STATE)?.chars().next()?;
+    let ppid = fields.get(STAT_PPID)?.parse().ok()?;
+    let threads = fields.get(STAT_THREADS)?.parse().ok()?;
+    let start_ticks = fields.get(STAT_STARTTIME)?.parse().ok()?;
     Some((state, ppid, threads, start_ticks))
+}
+
+/// `/proc/<pid>/stat` field indices, counted from the field after `comm`, so
+/// index `n` is field `n + 3` of the line.
+const STAT_STATE: usize = 0;
+const STAT_PPID: usize = 1;
+const STAT_UTIME: usize = 11;
+const STAT_STIME: usize = 12;
+const STAT_THREADS: usize = 17;
+const STAT_STARTTIME: usize = 19;
+
+/// `comm` (field 2) may contain spaces and parentheses, so the split starts
+/// after the last `)`.
+fn stat_fields(stat: &str) -> Option<Vec<&str>> {
+    let close = stat.rfind(')')?;
+    Some(stat[close + 1..].split_whitespace().collect())
 }
 
 /// Join a NUL-separated `/proc/<pid>/cmdline` into one readable line.
@@ -609,36 +709,75 @@ fn boot_time(root: &Path) -> Option<u64> {
     })
 }
 
-/// Read `/proc` and return the model used by the panel.
-pub fn collect(gpu: &HashMap<i32, GpuProc>, gpu_only: bool) -> Vec<ProcRow> {
-    collect_from(Path::new("/proc"), gpu, gpu_only)
+/// `utime + stime` and `starttime` from `/proc/<pid>/stat`.
+pub fn parse_cpu_ticks(stat: &str) -> Option<CpuTicks> {
+    let fields = stat_fields(stat)?;
+    let utime = fields.get(STAT_UTIME)?.parse::<u64>().ok()?;
+    let stime = fields.get(STAT_STIME)?.parse::<u64>().ok()?;
+    let start_ticks = fields.get(STAT_STARTTIME)?.parse::<u64>().ok()?;
+
+    Some(CpuTicks {
+        ticks: utime.saturating_add(stime),
+        start_ticks,
+    })
 }
 
-fn collect_from(root: &Path, gpu: &HashMap<i32, GpuProc>, gpu_only: bool) -> Vec<ProcRow> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return merge_rows(Vec::new(), gpu, gpu_only);
-    };
+/// Read `/proc` and return the model used by the panel.
+pub fn collect(
+    cpu: &mut ProcessCpuSampler,
+    gpu: &HashMap<i32, GpuProc>,
+    interval: Duration,
+) -> Vec<ProcRow> {
+    collect_from(Path::new("/proc"), cpu, gpu, interval)
+}
 
+fn collect_from(
+    root: &Path,
+    cpu: &mut ProcessCpuSampler,
+    gpu: &HashMap<i32, GpuProc>,
+    interval: Duration,
+) -> Vec<ProcRow> {
     let mut statuses = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(file_name) = entry.file_name().into_string() else {
-            continue;
-        };
-        let Ok(pid) = file_name.parse::<i32>() else {
-            continue;
-        };
-        let Ok(status) = fs::read_to_string(entry.path().join("status")) else {
-            continue;
-        };
-        statuses.push((pid, parse_status(&status)));
+    let mut counters = HashMap::new();
+
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let Ok(file_name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Ok(pid) = file_name.parse::<i32>() else {
+                continue;
+            };
+            let Ok(status) = fs::read_to_string(entry.path().join("status")) else {
+                continue;
+            };
+            let status = parse_status(&status);
+            // Kernel threads can never become a row, so their counters are not
+            // worth a second read; a process that exits between the two reads
+            // simply has no counters this round.
+            if status.has_mm
+                && let Some(ticks) = fs::read_to_string(entry.path().join("stat"))
+                    .ok()
+                    .and_then(|text| parse_cpu_ticks(&text))
+            {
+                counters.insert(pid, ticks);
+            }
+            statuses.push((pid, status));
+        }
     }
 
-    merge_rows(statuses, gpu, gpu_only)
+    let usage = cpu.sample(counters, interval, clock_ticks_per_second());
+    merge_rows(statuses, &usage, gpu)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nominal sampling interval used by the panel.
+    const TICK: Duration = Duration::from_secs(1);
+    /// USER_HZ: `_SC_CLK_TCK` is 100 on every Linux userspace ABI.
+    const HZ: u64 = 100;
 
     fn gpu_proc(vram_kb: u64, gtt_kb: u64) -> GpuProc {
         GpuProc {
@@ -647,6 +786,18 @@ mod tests {
             gtt_kb,
             ..GpuProc::default()
         }
+    }
+
+    fn ticks(ticks: u64, start_ticks: u64) -> CpuTicks {
+        CpuTicks { ticks, start_ticks }
+    }
+
+    /// A `/proc/<pid>/stat` line with the fields this module reads.
+    fn stat_line(pid: i32, utime: u64, stime: u64, start_ticks: u64) -> String {
+        format!(
+            "{pid} (proc) S 1 {pid} {pid} 0 -1 4194304 100 0 0 0 \
+             {utime} {stime} 0 0 20 0 7 0 {start_ticks} 0"
+        )
     }
 
     fn status(name: &str, rss_kb: u64, swap_kb: u64) -> ProcStatus {
@@ -693,6 +844,7 @@ Threads:\t37
             name: "x".into(),
             mem_kb: 100,
             swap_kb: 200,
+            cpu_percent: None,
             gpu: Some(gpu_proc(300, 400)),
         };
 
@@ -707,6 +859,7 @@ Threads:\t37
             name: "hindsight-api".into(),
             mem_kb: 32_000,
             swap_kb: 1_400_000,
+            cpu_percent: None,
             gpu: None,
         };
 
@@ -724,24 +877,26 @@ Threads:\t37
         ];
         let gpu = HashMap::from([(1, gpu_proc(10, 20))]);
 
-        let rows = merge_rows(statuses, &gpu, false);
+        let rows = merge_rows(statuses, &HashMap::new(), &gpu);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows.iter().find(|r| r.pid == 2).unwrap().total_kb(), 550);
     }
 
     #[test]
-    fn merge_rows_gpu_only_drops_processes_without_a_gpu_context() {
+    fn the_gpu_only_filter_drops_processes_without_a_gpu_context() {
         let statuses = vec![
             (1, status("llama-server", 100, 0)),
             (2, status("python", 50, 500)),
         ];
         let gpu = HashMap::from([(1, gpu_proc(10, 20))]);
+        let rows = merge_rows(statuses, &HashMap::new(), &gpu);
 
-        let rows = merge_rows(statuses, &gpu, true);
+        let filtered = filter_rows(&rows, true);
 
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].pid, 1);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].pid, 1);
+        assert_eq!(filter_rows(&rows, false), rows);
     }
 
     #[test]
@@ -757,7 +912,7 @@ Threads:\t37
             (100, status("real", 10, 0)),
         ];
 
-        let rows = merge_rows(statuses, &HashMap::new(), false);
+        let rows = merge_rows(statuses, &HashMap::new(), &HashMap::new());
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].pid, 100);
@@ -773,7 +928,7 @@ Threads:\t37
     fn merge_rows_keeps_gpu_clients_whose_status_disappeared() {
         let gpu = HashMap::from([(42, gpu_proc(10, 20))]);
 
-        let rows = merge_rows(Vec::new(), &gpu, true);
+        let rows = merge_rows(Vec::new(), &HashMap::new(), &gpu);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].pid, 42);
@@ -786,8 +941,8 @@ Threads:\t37
         gpu.absorb(&gpu_proc(1, 2));
         let rows = merge_rows(
             vec![(1, status("x", 0, 0))],
+            &HashMap::new(),
             &HashMap::from([(1, gpu)]),
-            false,
         );
 
         assert_eq!(rows[0].vram_kb(), Some(11));
@@ -1120,11 +1275,165 @@ Threads:\t37
         fs::create_dir_all(root.join("not-a-pid")).unwrap();
 
         let gpu = HashMap::from([(200, gpu_proc(1, 2))]);
-        let rows = collect_from(&root, &gpu, false);
+        let rows = collect_from(&root, &mut ProcessCpuSampler::default(), &gpu, TICK);
 
         assert_eq!(rows.len(), 2);
         let second = rows.iter().find(|r| r.pid == 200).unwrap();
         assert_eq!(second.total_kb(), 53);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_cpu_ticks_reads_user_plus_system_time_and_start_time() {
+        let ticks = parse_cpu_ticks(&stat_line(123, 5, 7, 4_242)).expect("parse ticks");
+
+        assert_eq!(ticks.ticks, 12);
+        assert_eq!(ticks.start_ticks, 4_242);
+        assert_eq!(parse_cpu_ticks("not a stat line"), None);
+        assert_eq!(parse_cpu_ticks("123 (x) S 1 2"), None);
+    }
+
+    #[test]
+    fn a_process_sampled_for_the_first_time_has_no_cpu_share_yet() {
+        let mut sampler = ProcessCpuSampler::default();
+
+        let first = sampler.sample(HashMap::from([(10, ticks(100, 1))]), TICK, HZ);
+        assert!(first.is_empty(), "a baseline sample cannot report a share");
+
+        let second = sampler.sample(HashMap::from([(10, ticks(150, 1))]), TICK, HZ);
+        assert_eq!(second.get(&10), Some(&50.0));
+    }
+
+    #[test]
+    fn cpu_share_is_scaled_by_the_actual_sampling_interval() {
+        let mut sampler = ProcessCpuSampler::default();
+        sampler.sample(HashMap::from([(1, ticks(0, 5))]), TICK, HZ);
+
+        let share = sampler.sample(
+            HashMap::from([(1, ticks(25, 5))]),
+            Duration::from_millis(500),
+            HZ,
+        );
+
+        assert_eq!(share.get(&1), Some(&50.0));
+    }
+
+    #[test]
+    fn cpu_share_counts_every_thread_so_it_can_exceed_one_core() {
+        let mut sampler = ProcessCpuSampler::default();
+        sampler.sample(HashMap::from([(1, ticks(0, 5))]), TICK, HZ);
+
+        let share = sampler.sample(HashMap::from([(1, ticks(900, 5))]), TICK, HZ);
+
+        assert_eq!(share.get(&1), Some(&900.0));
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_measured_against_the_old_process() {
+        let mut sampler = ProcessCpuSampler::default();
+        sampler.sample(HashMap::from([(7, ticks(9_000, 100))]), TICK, HZ);
+
+        let share = sampler.sample(HashMap::from([(7, ticks(10, 200))]), TICK, HZ);
+
+        assert_eq!(share.get(&7), None);
+    }
+
+    #[test]
+    fn a_process_that_vanished_and_returned_starts_over() {
+        let mut sampler = ProcessCpuSampler::default();
+        sampler.sample(HashMap::from([(3, ticks(0, 9))]), TICK, HZ);
+        sampler.sample(HashMap::new(), TICK, HZ);
+
+        let share = sampler.sample(HashMap::from([(3, ticks(500, 9))]), TICK, HZ);
+
+        assert_eq!(share.get(&3), None, "a gap must not look like a 500% spike");
+    }
+
+    #[test]
+    fn a_zero_interval_reports_nothing_instead_of_infinity() {
+        let mut sampler = ProcessCpuSampler::default();
+        sampler.sample(HashMap::from([(1, ticks(0, 5))]), TICK, HZ);
+
+        let share = sampler.sample(HashMap::from([(1, ticks(50, 5))]), Duration::ZERO, HZ);
+
+        assert!(share.is_empty());
+    }
+
+    #[test]
+    fn sorting_by_cpu_puts_unsampled_rows_below_every_measured_row() {
+        let mut rows = vec![
+            ProcRow {
+                pid: 1,
+                cpu_percent: None,
+                ..ProcRow::default()
+            },
+            ProcRow {
+                pid: 2,
+                cpu_percent: Some(12.0),
+                ..ProcRow::default()
+            },
+            ProcRow {
+                pid: 3,
+                cpu_percent: Some(1_400.5),
+                ..ProcRow::default()
+            },
+            ProcRow {
+                pid: 4,
+                cpu_percent: None,
+                ..ProcRow::default()
+            },
+        ];
+
+        sort_rows(&mut rows, SortKey::Cpu);
+
+        assert_eq!(
+            rows.iter().map(|r| r.pid).collect::<Vec<_>>(),
+            vec![3, 2, 1, 4]
+        );
+    }
+
+    #[test]
+    fn collect_from_reports_cpu_for_processes_without_a_gpu_context() {
+        let root = std::env::temp_dir().join(format!("amdtop-cpu-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (pid, name) in [(100, "chrome"), (200, "llama-server")] {
+            let dir = root.join(pid.to_string());
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("status"),
+                format!("Name:\t{name}\nVmRSS:\t10 kB\n"),
+            )
+            .unwrap();
+            fs::write(dir.join("stat"), stat_line(pid, 0, 0, pid as u64)).unwrap();
+        }
+
+        let mut sampler = ProcessCpuSampler::default();
+        let gpu = HashMap::new();
+        let first = collect_from(&root, &mut sampler, &gpu, TICK);
+        assert!(
+            first.iter().all(|row| row.cpu_percent.is_none()),
+            "the first sample only records a baseline"
+        );
+
+        // One second later: chrome burned 0.5 CPU-seconds, llama-server 2.0.
+        fs::write(root.join("100/stat"), stat_line(100, 50, 0, 100)).unwrap();
+        fs::write(root.join("200/stat"), stat_line(200, 120, 80, 200)).unwrap();
+        let second = collect_from(&root, &mut sampler, &gpu, TICK);
+
+        let cpu_of = |pid: i32| {
+            second
+                .iter()
+                .find(|row| row.pid == pid)
+                .expect("row")
+                .cpu_percent
+        };
+        assert_eq!(cpu_of(100), Some(100.0 * 50.0 / HZ as f32));
+        assert_eq!(cpu_of(200), Some(100.0 * 200.0 / HZ as f32));
+        assert!(
+            second.iter().all(|row| !row.has_gpu()),
+            "CPU usage must not depend on holding a GPU context"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

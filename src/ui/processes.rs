@@ -314,7 +314,24 @@ fn cell_for(row: &ProcRow, column: usize, app: &App) -> Cell<'static> {
         8 => right(row.gfx().to_string()),
         9 => right(row.compute().to_string()),
         10 => right(row.dma().to_string()),
-        _ => right(row.cpu().to_string()),
+        _ => {
+            let percent = row.cpu();
+            let text = fmt_cpu(percent);
+            if percent.is_some() {
+                right(text)
+            } else {
+                dimmed(text, dim)
+            }
+        }
+    }
+}
+
+/// CPU column: whole percent of one core (already summed over every thread),
+/// or `-` while the process has no second sample to compare against.
+fn fmt_cpu(percent: Option<f32>) -> String {
+    match percent {
+        Some(percent) => format!("{percent:.0}"),
+        None => "-".to_string(),
     }
 }
 
@@ -354,7 +371,15 @@ fn fmt_opt_kib(kib: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fmt_kib, fmt_opt_kib};
+    use super::{fmt_cpu, fmt_kib, fmt_opt_kib};
+
+    #[test]
+    fn cpu_column_shows_a_dash_until_a_second_sample_exists() {
+        assert_eq!(fmt_cpu(None), "-");
+        assert_eq!(fmt_cpu(Some(0.0)), "0");
+        assert_eq!(fmt_cpu(Some(0.4)), "0");
+        assert_eq!(fmt_cpu(Some(1_501.4)), "1501");
+    }
 
     #[test]
     fn memory_columns_use_compact_binary_units() {
