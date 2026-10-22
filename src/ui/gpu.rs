@@ -14,7 +14,20 @@ use super::{render_bar, section_block};
 const GPU_VALUE_WIDTH: usize = 15;
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
-    let block = section_block(app, Section::Gpu, "GPU", SectionBox::Gpu);
+    // Say so when part of the GPU memory belongs to processes this user cannot
+    // read: otherwise the per-process numbers silently fail to add up.
+    let unattributed = app.gpu_unattributed_bytes();
+    let title = if unattributed >= (512 << 20) {
+        let gib = unattributed as f64 / (1u64 << 30) as f64;
+        if crate::kill::effective_uid() == 0 {
+            format!("GPU  {gib:.1}G unattributed")
+        } else {
+            format!("GPU  {gib:.1}G unattributed (root/container processes; run as root)")
+        }
+    } else {
+        "GPU".to_string()
+    };
+    let block = section_block(app, Section::Gpu, &title, SectionBox::Gpu);
     let inner = block.inner(area);
     f.render_widget(block, area);
 

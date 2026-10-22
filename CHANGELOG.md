@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The GPU box reports GPU memory that cannot be attributed to a readable
+  process: when the kernel's device counter exceeds the per-process fdinfo sum
+  by more than 512 MiB it shows e.g. `74.5G unattributed (root/container
+  processes; run as root)`, which explains why the process table cannot add up
+  to the system figure. Root and container workloads do not expose
+  `/proc/<pid>/fdinfo` to a normal user.
 - Process table lists every process, not just DRM clients, so memory hogs
   without a GPU context (containers, language servers) are visible. Kernel
   threads and zombies are filtered out because they have no address space.

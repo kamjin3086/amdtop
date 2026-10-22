@@ -88,6 +88,13 @@ back to the stock release later, run `cargo install amdtop --force`.
 - `TOTAL` adds shared pages once per process, so summing the column over-counts
   memory that several processes map. Use it to rank processes, not to compute
   the system total; the CPU section's MEM/SWP bars remain authoritative.
+- GPU memory of processes you cannot read is not attributable: root processes
+  (including anything running inside a root-owned container) do not expose
+  `/proc/<pid>/fdinfo` to a normal user, so their GTT/VRAM shows as `-`. When
+  the kernel's device counter exceeds the sum of readable processes by more
+  than 512 MiB, the GPU box title reports the remainder, e.g.
+  `GPU  74.5G unattributed (root/container processes; run as root)`. Running
+  amdtop as root attributes those processes too.
 - Everything here was validated on a Strix Halo APU (Ryzen AI MAX+ 395, 32
   cores, XDNA NPU) under Fedora; discrete-GPU setups take the same code paths
   but have not been tested.

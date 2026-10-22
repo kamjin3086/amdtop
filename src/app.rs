@@ -431,6 +431,24 @@ impl App {
         self.sync_proc_detail();
     }
 
+    /// GPU memory that cannot be attributed to a readable process, summed over
+    /// every device (VRAM + GTT).
+    pub fn gpu_unattributed_bytes(&self) -> u64 {
+        let mut system_used = 0u64;
+        let mut attributed_kib = 0u64;
+        for gpu in &self.gpus {
+            let Some(app) = gpu.app.as_ref() else {
+                continue;
+            };
+            let usage = &app.stat.vram_usage.0;
+            system_used += usage.vram.heap_usage + usage.gtt.heap_usage;
+            for process in &app.stat.fdinfo.proc_usage {
+                attributed_kib += process.usage.vram_usage + process.usage.gtt_usage;
+            }
+        }
+        unattributed_gpu_bytes(system_used, attributed_kib)
+    }
+
     /// Row currently under the cursor.
     pub fn selected_proc(&self) -> Option<&ProcRow> {
         self.proc_state
@@ -810,6 +828,14 @@ pub struct MemInfo {
     pub total_bytes: u64,
 }
 
+/// GPU memory the kernel reports for a device minus what per-process fdinfo
+/// accounts for. A large remainder means a holder is not readable at this
+/// privilege level: root processes (including containers) do not expose
+/// `/proc/<pid>/fdinfo`, so their GTT/VRAM cannot be attributed.
+pub fn unattributed_gpu_bytes(system_used_bytes: u64, attributed_kib: u64) -> u64 {
+    system_used_bytes.saturating_sub(attributed_kib.saturating_mul(1024))
+}
+
 pub fn gpu_mem_info(app: &AppAmdgpuTop) -> MemInfo {
     let usage = &app.stat.vram_usage.0;
     memory_info(
@@ -986,5 +1012,14 @@ mod tests {
     fn memory_info_handles_zero_and_overcommitted_pools() {
         assert_eq!(memory_info(false, (10, 0), (0, 0)).percent, 0.0);
         assert_eq!(memory_info(false, (200, 100), (0, 0)).percent, 100.0);
+    }
+    #[test]
+    fn gpu_unattributed_is_the_gap_between_kernel_and_fdinfo() {
+        // nothing attributed: the whole device usage is a gap
+        assert_eq!(super::unattributed_gpu_bytes(10 << 30, 0), 10 << 30);
+        // 4 GiB reported by fdinfo (in KiB) out of 10 GiB used
+        assert_eq!(super::unattributed_gpu_bytes(10 << 30, 4 << 20), 6 << 30);
+        // fdinfo may slightly exceed the device counter (shared accounting)
+        assert_eq!(super::unattributed_gpu_bytes(1 << 30, 2 << 20), 0);
     }
 }
