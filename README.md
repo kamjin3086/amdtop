@@ -8,13 +8,14 @@
 > Everything below the divider is the upstream README, kept verbatim. Only the
 > section above it describes this fork.
 
-![amdtop fork running on a Strix Halo APU: the process table is sorted by TOTAL and shows MEM, SWAP, VRAM and GTT columns, the NPU section is collapsed to two rows, and the footer lists the fork's keys](docs/screenshot-fork.png)
+![amdtop fork on a Strix Halo APU: the process table sorted by TOTAL with a root container process at 82.8G, and the detail pane open underneath showing its command line, docker unit and io counters](docs/screenshot-fork.png)
 
-*The process table sorted by `TOTAL` (`MEM + SWAP + VRAM + GTT`) on a Ryzen AI
-MAX+ 395. `llama-server` leads with 5.6G even though its resident memory is only
-197M: the rest is GPU GTT and pages compressed into zram. `hindsight-api` and
-`dnf5daemon-serv` never touch the GPU, yet they are the next largest consumers.
-The footer shows the keys this fork adds.*
+*PROCESSES sorted by `TOTAL` (`MEM + SWAP + VRAM + GTT`) on a Ryzen AI MAX+ 395,
+running as root. The leader is a model server owned by root inside a container:
+8.3G resident plus **74.4G of GTT**, i.e. unified memory the GPU driver holds
+on its behalf. A resident-only view calls it an 8G process, and without root its
+GPU memory is not even readable. Below the table, the `d` detail pane names the
+full command line, the docker unit and the exact command that manages it.*
 
 ## Why this fork exists
 
